@@ -6,7 +6,7 @@ use forc_client::{
     op::{deploy, run},
     NodeTarget,
 };
-use forc_pkg::{manifest::ExperimentalFlags, Built, BuiltPackage};
+use forc_pkg::{manifest::ExperimentalFlags, Built, BuiltPackage, PrintOpts};
 use fuel_tx::TransactionBuilder;
 use fuel_vm::fuel_tx;
 use fuel_vm::interpreter::Interpreter;
@@ -258,6 +258,15 @@ pub(crate) async fn compile_to_bytes(file_name: &str, run_config: &RunConfig) ->
     let build_opts = forc_pkg::BuildOpts {
         build_target: run_config.build_target,
         release: run_config.release,
+        print: PrintOpts {
+            ast: true,
+            dca_graph: None,
+            dca_graph_url_format: None,
+            finalized_asm: false,
+            intermediate_asm: false,
+            ir: false,
+            reverse_order: false,
+        },
         pkg: forc_pkg::PkgOpts {
             path: Some(format!(
                 "{manifest_dir}/src/e2e_vm_tests/test_programs/{file_name}",

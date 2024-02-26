@@ -2024,7 +2024,7 @@ fn construct_dead_code_warning_from_node(
                 })),
             ..
         } => CompileWarning {
-            span: name.span(),
+            span: {dbg!(name.as_str()); name.span() },
             warning_content: Warning::DeadFunctionDeclaration,
         },
         ty::TyAstNode {
@@ -2119,11 +2119,11 @@ fn construct_dead_code_warning_from_node(
             warning_content: Warning::DeadDeclaration,
         },
         // Otherwise, this is unreachable.
-        ty::TyAstNode {
+        x @ ty::TyAstNode {
             span,
             content: ty::TyAstNodeContent::Expression(_) | ty::TyAstNodeContent::SideEffect(_),
         } => CompileWarning {
-            span: span.clone(),
+            span: { /*dbg!(x);*/ span.clone()},
             warning_content: Warning::UnreachableCode,
         },
         ty::TyAstNode {

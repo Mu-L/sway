@@ -260,8 +260,8 @@ impl<'eng> FnCompiler<'eng> {
             // a side effect can be () because it just impacts the type system/namespacing.
             // There should be no new IR generated.
             ty::TyAstNodeContent::SideEffect(_) => Ok(None),
-            ty::TyAstNodeContent::Error(_, _) => {
-                unreachable!("error node found when generating IR");
+            ty::TyAstNodeContent::Error(a, b) => {
+                unreachable!("error node found when generating IR: {:?}", a);
             }
         }
     }
@@ -1292,15 +1292,9 @@ impl<'eng> FnCompiler<'eng> {
                 let returned_value = self
                     .current_block
                     .append(context)
-                    .contract_call(
-                        "SOMETHING".into(),
-                        params,
-                        coins,
-                        asset_id,
-                        gas,
-                    )
+                    .contract_call("SOMETHING".into(), params, coins, asset_id, gas)
                     .add_metadatum(context, span_md_idx);
-                
+
                 Ok(TerminatorValue::new(returned_value, context))
             }
             Intrinsic::ContractRet => {
@@ -2208,7 +2202,6 @@ impl<'eng> FnCompiler<'eng> {
         {
             Ok(TerminatorValue::new(config_val, context))
         } else {
-            dbg!(&call_path, &name);
             Err(CompileError::InternalOwned(
                 format!("Unable to resolve variable '{}'.", name.as_str()),
                 Span::dummy(),
@@ -2241,6 +2234,7 @@ impl<'eng> FnCompiler<'eng> {
         // We must compile the RHS before checking for shadowing, as it will still be in the
         // previous scope.
         let init_val = self.compile_expression_to_value(context, md_mgr, body)?;
+
         if init_val.is_terminator {
             return Ok(Some(init_val));
         }
@@ -2255,6 +2249,7 @@ impl<'eng> FnCompiler<'eng> {
 
         let mutable = matches!(mutability, ty::VariableMutability::Mutable);
         let local_name = self.lexical_map.insert(name.as_str().to_owned());
+
         let local_var = self
             .function
             .new_local_var(context, local_name.clone(), return_type, None, mutable)

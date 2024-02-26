@@ -120,6 +120,7 @@ impl Intrinsic {
             "__smo" => Smo,
             "__not" => Not,
             "__contract_call" => ContractCall,
+            "__contract_ret" => ContractRet,
             _ => return None,
         })
     }

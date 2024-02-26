@@ -10,7 +10,8 @@ use super::fuel::{
 
 use crate::{
     asm_lang::{allocated_ops::AllocatedOp, Label},
-    decl_engine::DeclRefFunction, ExperimentalFlags,
+    decl_engine::DeclRefFunction,
+    ExperimentalFlags,
 };
 
 type SelectorOpt = Option<[u8; 4]>;

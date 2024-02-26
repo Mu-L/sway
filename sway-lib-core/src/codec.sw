@@ -132,6 +132,13 @@ impl BufferReader {
             v
         }
     }
+
+    pub fn decode<T>(ref mut self) -> T 
+    where
+        T: AbiDecode
+    {
+        T::abi_decode(self)
+    }
 }
 
 // Encode
@@ -614,6 +621,16 @@ impl AbiDecode for u8 {
 impl AbiDecode for bool {
     fn abi_decode(ref mut buffer: BufferReader) -> bool {
         buffer.read::<bool>()
+    }
+}
+
+impl AbiDecode for raw_slice {
+    fn abi_decode(ref mut buffer: BufferReader) -> raw_slice {
+        let len = u64::abi_decode(buffer);
+        let data = buffer.read_bytes(len);
+        asm(s: (data.ptr(), len)) {
+            s: raw_slice
+        }
     }
 }
 

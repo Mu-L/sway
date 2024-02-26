@@ -313,10 +313,15 @@ fn type_check_field_arguments(
                     .with_help_text(UNIFY_STRUCT_FIELD_HELP_TEXT)
                     .with_type_annotation(struct_field.type_argument.type_id)
                     .with_unify_generic(true);
-                let value = match ty::TyExpression::type_check(handler, ctx, field.value.clone()) {
+
+                let h = Handler::default();
+                let value = match ty::TyExpression::type_check(&h, ctx, field.value.clone()) {
                     Ok(res) => res,
                     Err(_) => continue,
                 };
+                assert!(!h.has_errors(), "{:?}", h);
+                handler.append(h);
+
                 typed_fields.push(ty::TyStructExpressionField {
                     value,
                     name: field.name.clone(),

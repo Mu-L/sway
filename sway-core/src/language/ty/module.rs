@@ -77,22 +77,7 @@ impl TyModule {
         &'b self,
         engines: &'a Engines,
     ) -> impl '_ + Iterator<Item = DeclRefFunction> {
-        self.all_nodes.iter().flat_map(move |node| {
-            let mut fns = vec![];
-
-            if let TyAstNodeContent::Declaration(TyDecl::ImplTrait(decl)) = &node.content {
-                let decl = engines.de().get(&decl.decl_id);
-                if decl.is_impl_contract(engines.te()) {
-                    for item in &decl.items {
-                        if let TyTraitItem::Fn(f) = item {
-                            fns.push(f.clone());
-                        }
-                    }
-                }
-            }
-
-            fns
-        })
+        self.all_nodes.iter().flat_map(move |node| node.contract_fns(engines))
     }
 
     pub(crate) fn check_deprecated(

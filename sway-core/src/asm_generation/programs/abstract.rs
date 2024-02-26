@@ -2,11 +2,18 @@ use super::{AbstractEntry, AbstractProgram, AllocatedProgram, ProgramKind};
 
 use crate::{
     asm_generation::fuel::{
-        abstract_instruction_set::AbstractInstructionSet, allocated_abstract_instruction_set::AllocatedAbstractInstructionSet, compiler_constants, data_section::{DataSection, Entry}, register_sequencer::RegisterSequencer
+        abstract_instruction_set::AbstractInstructionSet,
+        allocated_abstract_instruction_set::AllocatedAbstractInstructionSet,
+        compiler_constants,
+        data_section::{DataSection, Entry},
+        register_sequencer::RegisterSequencer,
     },
     asm_lang::{
-        allocated_ops::{AllocatedOpcode, AllocatedRegister}, AllocatedAbstractOp, ConstantRegister, ControlFlowOp, VirtualImmediate12, VirtualImmediate18
-    }, ExperimentalFlags,
+        allocated_ops::{AllocatedOpcode, AllocatedRegister},
+        AllocatedAbstractOp, ConstantRegister, ControlFlowOp, VirtualImmediate12,
+        VirtualImmediate18,
+    },
+    ExperimentalFlags,
 };
 
 use sway_error::error::CompileError;
@@ -152,7 +159,7 @@ impl AbstractProgram {
     }
 
     // WHen the new encoding is used, jumps to the `__entry`  function
-    fn build_jump_to_entry(&mut self, asm_buf: &mut AllocatedAbstractInstructionSet,) {
+    fn build_jump_to_entry(&mut self, asm_buf: &mut AllocatedAbstractInstructionSet) {
         let entry = self.entries.iter().find(|x| x.name == "__entry").unwrap();
         asm_buf.ops.push(AllocatedAbstractOp {
             opcode: Either::Right(ControlFlowOp::Jump(entry.label)),
@@ -165,7 +172,7 @@ impl AbstractProgram {
     /// 'selector'.
     /// See https://fuellabs.github.io/fuel-specs/master/vm#call-frames which
     /// describes the first argument to be at word offset 73.
-    fn build_contract_abi_switch(&mut self, asm_buf: &mut AllocatedAbstractInstructionSet,) {
+    fn build_contract_abi_switch(&mut self, asm_buf: &mut AllocatedAbstractInstructionSet) {
         const SELECTOR_WORD_OFFSET: u64 = 73;
         const INPUT_SELECTOR_REG: AllocatedRegister = AllocatedRegister::Allocated(0);
         const PROG_SELECTOR_REG: AllocatedRegister = AllocatedRegister::Allocated(1);

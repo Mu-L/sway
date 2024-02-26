@@ -140,6 +140,7 @@ fn type_check_not(
                 received: engines.help_out(return_type).to_string(),
                 help_text: "".into(),
                 span,
+                internal: "8".into(),
             },
         ))),
     }
@@ -1048,6 +1049,7 @@ fn type_check_bitwise_binary_op(
                 received: engines.help_out(return_type).to_string(),
                 help_text: "".into(),
                 span,
+                internal: "7".into(),
             },
         ))),
     }
@@ -1122,6 +1124,7 @@ fn type_check_shift_binary_op(
                 received: engines.help_out(return_type).to_string(),
                 help_text: "Incorrect argument type".into(),
                 span: lhs.span,
+                internal: "6".into(),
             },
         ))),
     }
@@ -1441,10 +1444,10 @@ fn type_check_contract_call(
     //     }));
     // }
 
-    let return_type_id =
-        ctx.engines
-            .te()
-            .insert(ctx.engines, TypeInfo::Tuple(vec![]), None);
+    let return_type_id = ctx
+        .engines
+        .te()
+        .insert(ctx.engines, TypeInfo::Tuple(vec![]), None);
 
     // Arguments
     let arguments: Vec<ty::TyExpression> = arguments

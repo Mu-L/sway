@@ -801,20 +801,6 @@ impl ReplaceDecls for TyExpressionVariant {
                 } => {
                     fn_ref.replace_decls(decl_mapping, handler, ctx)?;
 
-                    #[inline]
-                    fn stack_frame_depth() -> usize {
-                        let lines = format!("{:?}", std::backtrace::Backtrace::capture())
-                            .split("{ fn:")
-                            .count();
-                        lines
-                    }
-
-                    //let decl = ctx.engines().de().get(fn_ref);
-                    if stack_frame_depth() > 5000 {
-                        dbg!(decl_mapping);
-                        todo!("{:?}", fn_ref.name());
-                    }
-
                     let new_decl_ref = fn_ref.clone().replace_decls_and_insert_new_with_parent(
                         decl_mapping,
                         handler,

@@ -114,11 +114,13 @@ impl ty::TyMatchBranch {
 
             // unify the return type from the typed result with the type annotation
             if !typed_result.deterministically_aborts(decl_engine, true) {
+                assert!(!handler.has_errors(), "{:?}", handler);
                 branch_ctx.unify_with_type_annotation(
                     handler,
                     typed_result.return_type,
                     &typed_result.span,
                 );
+                assert!(!handler.has_errors(), "{:?}", handler);
             }
 
             // if the typed branch result is a code block, then add the contents

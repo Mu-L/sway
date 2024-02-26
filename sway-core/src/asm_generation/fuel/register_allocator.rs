@@ -707,7 +707,6 @@ fn assign_registers(
 /// and a set of virtual registers to be spilled, insert the actual spills
 /// and return the updated function and the updated stack info.
 fn spill(ops: &[Op], spills: &FxHashSet<VirtualRegister>) -> Vec<Op> {
-    dbg!(ops);
     let mut spilled: Vec<Op> = vec![];
 
     // Attempt to discover the current stack size and base register.

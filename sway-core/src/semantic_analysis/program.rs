@@ -18,14 +18,16 @@ use crate::{
     transform::AttributesMap,
     BuildConfig, Engines, TypeArgs, TypeArgument, TypeBinding, TypeId, TypeInfo,
 };
-use sway_ast::Intrinsic;
-use sway_error::handler::{ErrorEmitted, Handler};
+use sway_ast::{Intrinsic, ItemFn};
+use sway_error::{
+    diagnostic::ToDiagnostic,
+    handler::{ErrorEmitted, Handler},
+};
 use sway_ir::{Context, Module};
 use sway_types::{BaseIdent, Ident, Span, Spanned};
 
 use super::{
-    TypeCheckAnalysis, TypeCheckAnalysisContext, TypeCheckFinalization,
-    TypeCheckFinalizationContext,
+    declaration::auto_impl, TypeCheckAnalysis, TypeCheckAnalysisContext, TypeCheckFinalization, TypeCheckFinalizationContext
 };
 
 fn call_encode(_engines: &Engines, arg: Expression) -> Expression {
@@ -203,8 +205,20 @@ fn gen_entry_fn(
         },
     )?);
 
-    assert!(!handler.has_errors(), "{:?}", handler);
-    assert!(!handler.has_warnings(), "{:?}", handler);
+    if handler.has_errors() {
+        println!("{}", ctx.engines().de().pretty_print(&ctx.engines));
+        let (a, b) = handler.consume();
+        for a in a {
+            println!(
+                "gen_entry_fn: {:?} {:?}",
+                a,
+                a.to_diagnostic(ctx.engines.se())
+            );
+        }
+    } else {
+        assert!(!handler.has_errors(), "{:?}", handler);
+        assert!(!handler.has_warnings(), "{:?}", handler);
+    }
 
     Ok(())
 }
@@ -234,238 +248,9 @@ impl TyProgram {
         let module_eval_order: Vec<sway_types::BaseIdent> =
             modules_dep_graph.compute_order(handler)?;
 
-        let mut root = ty::TyModule::type_check(handler, ctx.by_ref(), root, module_eval_order)?;
+        let mut root = ty::TyModule::type_check(handler, ctx.by_ref(), engines, parsed.kind, root, module_eval_order)?;
 
-        if ctx.experimental.new_encoding {
-            let main_decl = root
-                .all_nodes
-                .iter_mut()
-                .find_map(|x| match &mut x.content {
-                    ty::TyAstNodeContent::Declaration(ty::TyDecl::FunctionDecl(decl)) => {
-                        (decl.name.as_str() == "main").then(|| engines.de().get(&decl.decl_id))
-                    }
-                    _ => None,
-                });
-
-            let unit_type_id = engines.te().insert(engines, TypeInfo::Tuple(vec![]), None);
-            let bool_type_id = engines.te().insert(engines, TypeInfo::Boolean, None);
-            let string_slice_type_id = engines.te().insert(engines, TypeInfo::StringSlice, None);
-
-            match &parsed.kind {
-                TreeType::Predicate => {
-                    let main_decl = main_decl.unwrap();
-                    let result_name = Ident::new_no_span("result".into());
-
-                    let mut contents = vec![];
-                    let arguments = AstNode::push_decode_script_data_as_fn_args(
-                        engines,
-                        &mut contents,
-                        result_name.clone(),
-                        &main_decl,
-                    );
-                    contents.push(AstNode::return_expr(Expression::call_function_with_suffix(
-                        Ident::new_no_span("main".into()),
-                        arguments,
-                    )));
-
-                    gen_entry_fn(&mut ctx, &mut root, Purity::Pure, contents, bool_type_id)?;
-                }
-                TreeType::Script => {
-                    let main_decl = main_decl.unwrap();
-                    let result_name = Ident::new_no_span("result".into());
-
-                    let mut contents = vec![];
-                    let arguments = AstNode::push_decode_script_data_as_fn_args(
-                        engines,
-                        &mut contents,
-                        result_name.clone(),
-                        &main_decl,
-                    );
-                    AstNode::push_encode_and_return(
-                        engines,
-                        &mut contents,
-                        result_name,
-                        Expression::call_function_with_suffix(
-                            Ident::new_no_span("main".into()),
-                            arguments,
-                        ),
-                    );
-
-                    gen_entry_fn(&mut ctx, &mut root, Purity::Pure, contents, unit_type_id)?;
-                }
-                TreeType::Contract => {
-                    // let main_decl = main_decl.unwrap();
-                    let var_decl = ctx.engines.pe().insert(VariableDeclaration {
-                        name: Ident::new_no_span("method_name".to_string()),
-                        type_ascription: TypeArgument {
-                            type_id: string_slice_type_id,
-                            initial_type_id: string_slice_type_id,
-                            span: Span::dummy(),
-                            call_path_tree: None,
-                        },
-                        body: call_decode_first_param(engines),
-                        is_mutable: false,
-                    });
-                    let mut contents = vec![AstNode {
-                        content: AstNodeContent::Declaration(Declaration::VariableDeclaration(
-                            var_decl,
-                        )),
-                        span: Span::dummy(),
-                    }];
-
-                    let method_name_var_ref = Expression {
-                        kind: ExpressionKind::Variable(Ident::new_no_span(
-                            "method_name".to_string(),
-                        )),
-                        span: Span::dummy(),
-                    };
-
-                    fn import_core_ops(ctx: &mut TypeCheckContext<'_>) -> bool {
-                        // Check if the compilation context has acces to the
-                        // core library.
-                        let handler = Handler::default();
-                        let _ = ctx.star_import(
-                            &handler,
-                            &[
-                                Ident::new_no_span("core".into()),
-                                Ident::new_no_span("ops".into()),
-                            ],
-                            true,
-                        );
-
-                        !handler.has_errors()
-                    }
-
-                    assert!(import_core_ops(&mut ctx));
-
-                    let all_entries: Vec<_> = root
-                        .submodules_recursive()
-                        .flat_map(|(_, submod)| submod.module.contract_fns(engines))
-                        .chain(root.contract_fns(engines))
-                        .collect();
-                    for r in all_entries {
-                        let decl = engines.de().get(r.id());
-                        let args_type = arguments_type(engines, &decl);
-                        //let result_type = decl.return_type.clone();
-                        let args_tuple_name = Ident::new_no_span("args".to_string());
-                        let result_name = Ident::new_no_span("result".to_string());
-
-                        let slice = engines
-                            .te()
-                            .insert(engines, TypeInfo::RawUntypedSlice, None);
-                        let slice = TypeArgument {
-                            type_id: slice,
-                            initial_type_id: slice,
-                            span: Span::dummy(),
-                            call_path_tree: None,
-                        };
-
-                        contents.push(AstNode {
-                        content: AstNodeContent::Expression(Expression {
-                            kind: ExpressionKind::If(IfExpression {
-                                // call eq
-                                condition: Box::new(call_eq(
-                                    engines,
-                                    method_name_var_ref.clone(),
-                                    Expression {
-                                        kind: ExpressionKind::Literal(Literal::String(
-                                            decl.name.span(),
-                                        )),
-                                        span: Span::dummy(),
-                                    },
-                                )),
-                                then: Box::new(
-                                    Expression::code_block({
-                                        let mut nodes = vec![];
-                                        let arguments = if let Some(args_type) = args_type {
-                                            // decode parameters
-                                            nodes.push(AstNode::typed_variable_declaration(
-                                                engines,
-                                                args_tuple_name.clone(),
-                                                args_type.clone(),
-                                                call_decode_second_param(engines, args_type),
-                                                false
-                                            ));
-                                            arguments_as_expressions(args_tuple_name.clone(), &decl)
-                                        } else {
-                                            vec![]
-                                        };
-
-                                        // call the contract method
-                                        nodes.push(AstNode::typed_variable_declaration(
-                                            engines,
-                                            result_name.clone(),
-                                            slice,
-                                            call_encode(engines, Expression {
-                                                kind: ExpressionKind::FunctionApplication(
-                                                    Box::new(
-                                                        FunctionApplicationExpression {
-                                                            call_path_binding: TypeBinding {
-                                                                inner: CallPath {
-                                                                    prefixes: vec![],
-                                                                    suffix: Ident::new_no_span(format!("__contract_entry_{}", decl.call_path.suffix.clone())),
-                                                                    is_absolute: false
-                                                                },
-                                                                type_arguments: TypeArgs::Regular(vec![]),
-                                                                span: Span::dummy(),
-                                                            },
-                                                            arguments
-                                                        }
-                                                    )
-                                                ),
-                                                span: Span::dummy(),
-                                            }),
-                                            false
-                                        ));
-
-                                        // return the encoded contract result
-                                        nodes.push(AstNode {
-                                            content: AstNodeContent::Expression(Expression {
-                                                kind: ExpressionKind::IntrinsicFunction(IntrinsicFunctionExpression {
-                                                    name: Ident::new_no_span("__contract_ret".to_string()), 
-                                                    kind_binding: TypeBinding {
-                                                        inner: Intrinsic::ContractRet,
-                                                        type_arguments: TypeArgs::Regular(vec![]),
-                                                        span: Span::dummy()
-                                                    },
-                                                    arguments: vec![
-                                                        call_fn(Expression {
-                                                            kind: ExpressionKind::AmbiguousVariableExpression(result_name.clone()),
-                                                            span: Span::dummy()
-                                                        }, "ptr"),
-                                                        call_fn(Expression {
-                                                            kind: ExpressionKind::AmbiguousVariableExpression(result_name.clone()),
-                                                            span: Span::dummy()
-                                                        }, "number_of_bytes"),
-                                                    ]
-                                                }),
-                                                span: Span::dummy(),
-                                            }),
-                                            span: Span::dummy()
-                                        });
-
-                                        nodes
-                                    })
-                                ),
-                                r#else: None,
-                            }),
-                            span: Span::dummy(),
-                        }),
-                        span: Span::dummy(),
-                    });
-                    }
-
-                    gen_entry_fn(
-                        &mut ctx,
-                        &mut root,
-                        Purity::ReadsWrites,
-                        contents,
-                        unit_type_id,
-                    )?;
-                }
-                TreeType::Library => {}
-            }
-        }
+        
 
         let (kind, declarations, configurables) = Self::validate_root(
             handler,

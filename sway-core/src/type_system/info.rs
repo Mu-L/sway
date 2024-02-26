@@ -606,7 +606,7 @@ impl DebugWithEngines for TypeInfo {
         use TypeInfo::*;
         let s = match self {
             Unknown => "unknown".into(),
-            UnknownGeneric { name, .. } => name.to_string(),
+            UnknownGeneric { name, .. } => format!("generic({})", name.to_string()),
             Placeholder(t) => format!("placeholder({:?})", engines.help_out(t)),
             TypeParam(n) => format!("typeparam({n})"),
             StringSlice => "str".into(),

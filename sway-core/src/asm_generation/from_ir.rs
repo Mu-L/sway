@@ -106,10 +106,16 @@ fn compile_module_to_asm(
                 })
                 .collect();
 
-            let abstract_program =
-                AbstractProgram::new(kind, data_section, entries, non_entries, reg_seqr, ExperimentalFlags {
+            let abstract_program = AbstractProgram::new(
+                kind,
+                data_section,
+                entries,
+                non_entries,
+                reg_seqr,
+                ExperimentalFlags {
                     new_encoding: context.experimental.new_encoding,
-                });
+                },
+            );
 
             if build_config
                 .map(|cfg| cfg.print_intermediate_asm)

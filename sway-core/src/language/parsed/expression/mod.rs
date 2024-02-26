@@ -115,6 +115,30 @@ impl Expression {
         }
     }
 
+    pub fn call_associated_function_as_trait(
+        ty: TypeArgument,
+        as_trait: TypeId,
+        method_name: BaseIdent,
+        arguments: Vec<Expression>,
+    ) -> Self {
+        Expression {
+            kind: ExpressionKind::MethodApplication(Box::new(MethodApplicationExpression {
+                method_name_binding: TypeBinding {
+                    inner: MethodName::FromQualifiedPathRoot {
+                        ty,
+                        as_trait,
+                        method_name,
+                    },
+                    type_arguments: TypeArgs::Regular(vec![]),
+                    span: Span::dummy(),
+                },
+                contract_call_params: vec![],
+                arguments,
+            })),
+            span: Span::dummy(),
+        }
+    }
+
     pub fn call_associated_function(
         suffix: (TypeInfo, BaseIdent),
         method_name: BaseIdent,

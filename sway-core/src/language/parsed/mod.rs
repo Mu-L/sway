@@ -58,6 +58,16 @@ impl AstNode {
         }
     }
 
+    pub fn implicit_return_expr(value: Expression) -> AstNode {
+        AstNode {
+            content: AstNodeContent::Expression(Expression {
+                kind: ExpressionKind::ImplicitReturn(Box::new(value)),
+                span: Span::dummy(),
+            }),
+            span: Span::dummy(),
+        }
+    }
+
     pub fn match_branch(value: Expression, branches: Vec<MatchBranch>) -> AstNode {
         AstNode {
             content: AstNodeContent::Expression(Expression::match_branch(value, branches)),

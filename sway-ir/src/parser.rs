@@ -1225,24 +1225,16 @@ mod ir_builder {
                         .value
                         .as_value(context, ty)
                         .add_metadatum(context, opt_metadata),
-                    IrAstOperation::ContractCall(
-                        name,
-                        params,
-                        coins,
-                        asset_id,
-                        gas,
-                    ) => {
-                        block
-                            .append(context)
-                            .contract_call(
-                                name,
-                                *val_map.get(&params).unwrap(),
-                                *val_map.get(&coins).unwrap(),
-                                *val_map.get(&asset_id).unwrap(),
-                                *val_map.get(&gas).unwrap(),
-                            )
-                            .add_metadatum(context, opt_metadata)
-                    }
+                    IrAstOperation::ContractCall(name, params, coins, asset_id, gas) => block
+                        .append(context)
+                        .contract_call(
+                            name,
+                            *val_map.get(&params).unwrap(),
+                            *val_map.get(&coins).unwrap(),
+                            *val_map.get(&asset_id).unwrap(),
+                            *val_map.get(&gas).unwrap(),
+                        )
+                        .add_metadatum(context, opt_metadata),
                     IrAstOperation::GetElemPtr(base, elem_ty, idcs) => {
                         let ir_elem_ty = elem_ty
                             .to_ir_type(context)
