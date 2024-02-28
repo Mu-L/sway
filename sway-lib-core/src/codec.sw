@@ -266,94 +266,26 @@ impl AbiEncode for str {
     }
 }
 
-impl AbiEncode for str[0] {
-    fn abi_encode(self, ref mut _buffer: Buffer) {}
-}
+impl AbiEncode for str[0] { fn abi_encode(self, ref mut _buffer: Buffer) {} }
 
-impl AbiEncode for str[1] {
-    fn abi_encode(self, ref mut buffer: Buffer) {
-        use ::str::*;
-        let s = from_str_array(self);
-
-        let len = s.len();
-        let ptr = s.as_ptr();
-
-        let mut i = 0;
-        while i < len {
-            let byte = ptr.add::<u8>(i).read::<u8>();
-            buffer.push(byte);
-            i += 1;
-        }
-    }
-}
-
-impl AbiEncode for str[2] {
-    fn abi_encode(self, ref mut buffer: Buffer) {
-        use ::str::*;
-        let s = from_str_array(self);
-
-        let len = s.len();
-        let ptr = s.as_ptr();
-
-        let mut i = 0;
-        while i < len {
-            let byte = ptr.add::<u8>(i).read::<u8>();
-            buffer.push(byte);
-            i += 1;
-        }
-    }
-}
-
-impl AbiEncode for str[3] {
-    fn abi_encode(self, ref mut buffer: Buffer) {
-        use ::str::*;
-        let s = from_str_array(self);
-
-        let len = s.len();
-        let ptr = s.as_ptr();
-
-        let mut i = 0;
-        while i < len {
-            let byte = ptr.add::<u8>(i).read::<u8>();
-            buffer.push(byte);
-            i += 1;
-        }
-    }
-}
-
-impl AbiEncode for str[4] {
-    fn abi_encode(self, ref mut buffer: Buffer) {
-        use ::str::*;
-        let s = from_str_array(self);
-
-        let len = s.len();
-        let ptr = s.as_ptr();
-
-        let mut i = 0;
-        while i < len {
-            let byte = ptr.add::<u8>(i).read::<u8>();
-            buffer.push(byte);
-            i += 1;
-        }
-    }
-}
-
-impl AbiEncode for str[5] {
-    fn abi_encode(self, ref mut buffer: Buffer) {
-        use ::str::*;
-        let s = from_str_array(self);
-
-        let len = s.len();
-        let ptr = s.as_ptr();
-
-        let mut i = 0;
-        while i < len {
-            let byte = ptr.add::<u8>(i).read::<u8>();
-            buffer.push(byte);
-            i += 1;
-        }
-    }
-}
+// BEGIN STRARRAY_ENCODE
+impl AbiEncode for str[1] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[2] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[3] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[4] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[5] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[6] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[7] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[8] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[9] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[10] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[11] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[12] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[13] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[14] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[15] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+impl AbiEncode for str[16] { fn abi_encode(self, ref mut buffer: Buffer) { use ::str::*; let s = from_str_array(self); let len = s.len(); let ptr = s.as_ptr(); let mut i = 0; while i < len { let byte = ptr.add::<u8>(i).read::<u8>(); buffer.push(byte); i += 1; } } }
+// END STRARRAY_ENCODE
 
 // Encode Arrays and Slices
 
@@ -644,50 +576,24 @@ impl AbiDecode for str {
     }
 }
 
-impl AbiDecode for str[1] {
-    fn abi_decode(ref mut buffer: BufferReader) -> str[1] {
-        let data = buffer.read_bytes(1);
-        asm(s: data.ptr()) {
-            s: str[1]
-        }
-    }
-}
-
-impl AbiDecode for str[2] {
-    fn abi_decode(ref mut buffer: BufferReader) -> str[2] {
-        let data = buffer.read_bytes(2);
-        asm(s: data.ptr()) {
-            s: str[2]
-        }
-    }
-}
-
-impl AbiDecode for str[3] {
-    fn abi_decode(ref mut buffer: BufferReader) -> str[3] {
-        let data = buffer.read_bytes(3);
-        asm(s: data.ptr()) {
-            s: str[3]
-        }
-    }
-}
-
-impl AbiDecode for str[4] {
-    fn abi_decode(ref mut buffer: BufferReader) -> str[4] {
-        let data = buffer.read_bytes(4);
-        asm(s: data.ptr()) {
-            s: str[4]
-        }
-    }
-}
-
-impl AbiDecode for str[5] {
-    fn abi_decode(ref mut buffer: BufferReader) -> str[5] {
-        let data = buffer.read_bytes(5);
-        asm(s: data.ptr()) {
-            s: str[5]
-        }
-    }
-}
+// BEGIN STRARRAY_DECODE
+impl AbiDecode for str[1] { fn abi_decode(ref mut buffer: BufferReader) -> str[1] { let data = buffer.read_bytes(1); asm(s: data.ptr()) { s: str[1] } } }
+impl AbiDecode for str[2] { fn abi_decode(ref mut buffer: BufferReader) -> str[2] { let data = buffer.read_bytes(2); asm(s: data.ptr()) { s: str[2] } } }
+impl AbiDecode for str[3] { fn abi_decode(ref mut buffer: BufferReader) -> str[3] { let data = buffer.read_bytes(3); asm(s: data.ptr()) { s: str[3] } } }
+impl AbiDecode for str[4] { fn abi_decode(ref mut buffer: BufferReader) -> str[4] { let data = buffer.read_bytes(4); asm(s: data.ptr()) { s: str[4] } } }
+impl AbiDecode for str[5] { fn abi_decode(ref mut buffer: BufferReader) -> str[5] { let data = buffer.read_bytes(5); asm(s: data.ptr()) { s: str[5] } } }
+impl AbiDecode for str[6] { fn abi_decode(ref mut buffer: BufferReader) -> str[6] { let data = buffer.read_bytes(6); asm(s: data.ptr()) { s: str[6] } } }
+impl AbiDecode for str[7] { fn abi_decode(ref mut buffer: BufferReader) -> str[7] { let data = buffer.read_bytes(7); asm(s: data.ptr()) { s: str[7] } } }
+impl AbiDecode for str[8] { fn abi_decode(ref mut buffer: BufferReader) -> str[8] { let data = buffer.read_bytes(8); asm(s: data.ptr()) { s: str[8] } } }
+impl AbiDecode for str[9] { fn abi_decode(ref mut buffer: BufferReader) -> str[9] { let data = buffer.read_bytes(9); asm(s: data.ptr()) { s: str[9] } } }
+impl AbiDecode for str[10] { fn abi_decode(ref mut buffer: BufferReader) -> str[10] { let data = buffer.read_bytes(10); asm(s: data.ptr()) { s: str[10] } } }
+impl AbiDecode for str[11] { fn abi_decode(ref mut buffer: BufferReader) -> str[11] { let data = buffer.read_bytes(11); asm(s: data.ptr()) { s: str[11] } } }
+impl AbiDecode for str[12] { fn abi_decode(ref mut buffer: BufferReader) -> str[12] { let data = buffer.read_bytes(12); asm(s: data.ptr()) { s: str[12] } } }
+impl AbiDecode for str[13] { fn abi_decode(ref mut buffer: BufferReader) -> str[13] { let data = buffer.read_bytes(13); asm(s: data.ptr()) { s: str[13] } } }
+impl AbiDecode for str[14] { fn abi_decode(ref mut buffer: BufferReader) -> str[14] { let data = buffer.read_bytes(14); asm(s: data.ptr()) { s: str[14] } } }
+impl AbiDecode for str[15] { fn abi_decode(ref mut buffer: BufferReader) -> str[15] { let data = buffer.read_bytes(15); asm(s: data.ptr()) { s: str[15] } } }
+impl AbiDecode for str[16] { fn abi_decode(ref mut buffer: BufferReader) -> str[16] { let data = buffer.read_bytes(16); asm(s: data.ptr()) { s: str[16] } } }
+// END STRARRAY_DECODE
 
 impl<T> AbiDecode for [T; 0]
 where
@@ -787,6 +693,22 @@ where
         let b = B::abi_decode(buffer);
         let c = C::abi_decode(buffer);
         (a, b, c)
+    }
+}
+
+impl<A, B, C, D> AbiDecode for (A, B, C, D) 
+where
+    A: AbiDecode,
+    B: AbiDecode,
+    C: AbiDecode,
+    D: AbiDecode,
+{
+    fn abi_decode(ref mut buffer: BufferReader) -> (A, B, C, D) {
+        let a = A::abi_decode(buffer);
+        let b = B::abi_decode(buffer);
+        let c = C::abi_decode(buffer);
+        let d = D::abi_decode(buffer);
+        (a, b, c, d)
     }
 }
 

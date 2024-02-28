@@ -1004,6 +1004,17 @@ impl TraitMap {
         // If the type is generic/placeholder, its definition needs to contains all
         // constraints
         match &*type_engine.get(type_id) {
+            TypeInfo::UnknownGeneric { trait_constraints, .. } => {
+                let all = constraints.iter().all(|required| {
+                    trait_constraints
+                        .iter()
+                        .position(|constraint| constraint.eq(required, engines))
+                        .is_some()
+                });
+                if all {
+                    return Ok(());
+                }
+            }
             TypeInfo::Placeholder(p) => {
                 let all = constraints.iter().all(|required| {
                     p.trait_constraints
@@ -1050,6 +1061,11 @@ impl TraitMap {
                 }
             })
             .collect();
+
+        if engines.help_out(type_id).to_string().contains("GenericBimbam") {
+            dbg!(engines.help_out(type_id));
+            dbg!(&all_impld_traits);
+        }
 
         let required_traits: BTreeSet<(Ident, TypeId)> = constraints
             .iter()

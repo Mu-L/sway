@@ -107,97 +107,6 @@ impl<'a, 'b> AutoImplAbiEncodeContext<'a, 'b> {
         !handler.has_errors()
     }
 
-    fn auto_impl_abi_decode(
-        &mut self,
-        type_parameters: &[TypeParameter],
-        suffix: BaseIdent,
-        _unit_type_id: TypeId,
-        engines: &Engines,
-        get_contents: impl Fn(&Self, &[(BaseIdent, TypeParameter)]) -> Vec<AstNode>,
-    ) -> Option<TyAstNode> {
-        let type_parameters =
-            self.duplicate_type_parameters_with_extra_constraint(type_parameters, "AbiDecode");
-        let (implementing_for_type_id, implementing_for) =
-            self.build_implementing_for_with_type_parameters(suffix.clone(), &type_parameters);
-
-        let self_type = engines
-            .te()
-            .insert(engines, TypeInfo::new_self_type(Span::dummy()), None);
-
-        let fn_abi_decode_trait_item = FunctionDeclaration {
-            purity: crate::language::Purity::Pure,
-            attributes: AttributesMap::default(),
-            name: Ident::new_no_span("abi_decode".into()),
-            visibility: crate::language::Visibility::Public,
-            body: CodeBlock {
-                contents: get_contents(self, &type_parameters),
-                whole_block_span: Span::dummy(),
-            },
-            parameters: vec![FunctionParameter {
-                name: Ident::new_no_span("buffer".into()),
-                is_reference: true,
-                is_mutable: true,
-                mutability_span: Span::dummy(),
-                type_argument: TypeArgument {
-                    type_id: self.buffer_reader_type_id,
-                    initial_type_id: self.buffer_reader_type_id,
-                    span: Span::dummy(),
-                    call_path_tree: None,
-                },
-            }],
-            span: Span::dummy(),
-            return_type: TypeArgument {
-                type_id: self_type,
-                initial_type_id: self_type,
-                span: Span::dummy(),
-                call_path_tree: None,
-            },
-            type_parameters: vec![],
-            where_clause: vec![],
-            kind: FunctionDeclarationKind::Default,
-        };
-
-        let fn_abi_decode_trait_item = engines.pe().insert(fn_abi_decode_trait_item);
-        let impl_abi_decode = ImplTrait {
-            impl_type_parameters: type_parameters.into_iter().map(|x| x.1).collect(),
-            trait_name: self.abi_decode_call_path.clone(),
-            trait_type_arguments: vec![],
-            implementing_for,
-            items: vec![ImplItem::Fn(fn_abi_decode_trait_item)],
-            block_span: Span::dummy(),
-        };
-
-        let impl_abi_decode = engines.pe().insert(impl_abi_decode);
-        let impl_abi_decode = Declaration::ImplTrait(impl_abi_decode);
-
-        let handler = Handler::default();
-        let impl_abi_decode = TyAstNode::type_check(
-            &handler,
-            self.ctx.by_ref(),
-            AstNode {
-                content: AstNodeContent::Declaration(impl_abi_decode),
-                span: Span::dummy(),
-            },
-        )
-        .ok()?;
-
-         assert!(
-            !handler.has_errors(),
-            "{:?} {:?} {:#?}",
-            handler,
-            self.ctx.namespace.mod_path,
-            self.ctx.engines().se().all_files()
-        );
-        assert!(
-            !handler.has_warnings(),
-            "{:?} {:?}",
-            handler,
-            self.ctx.namespace.mod_path
-        );
-
-        Some(impl_abi_decode)
-    }
-
     fn build_implementing_for_with_type_parameters(
         &mut self,
         suffix: BaseIdent,
@@ -494,7 +403,7 @@ impl<'a, 'b> AutoImplAbiEncodeContext<'a, 'b> {
     }
 
     // Check if a struct can implement AbiEncode and AbiDecode
-    fn can_auto_impl_struct(&mut self, decl: &TyDecl) -> (bool, bool) {
+    fn can_auto_impl_struct(&mut self, engines: &Engines, decl: &TyDecl) -> (bool, bool) {
         // skip module "core"
         // Because of ordering, we cannot guarantee auto impl
         // for structs inside "core"
@@ -519,59 +428,57 @@ impl<'a, 'b> AutoImplAbiEncodeContext<'a, 'b> {
         }
 
         let all_fields_are_abi_encode = struct_decl.fields.iter().all(|field| {
-            if let TypeInfo::UnknownGeneric { .. } =
-                &*self.ctx.engines().te().get(field.type_argument.type_id)
-            {
-                return true;
-            }
-
-            let handler = Handler::default();
-            let field_type = self
-                .ctx
-                .resolve_type(
-                    &handler,
-                    field.type_argument.initial_type_id,
-                    &Span::dummy(),
-                    EnforceTypeArguments::Yes,
-                    None,
-                )
-                .unwrap();
-
-            self.ctx.check_type_impls_traits(
-                field_type,
+            let r = self.ctx.check_type_impls_traits(
+                field.type_argument.type_id,
                 &[TraitConstraint {
                     trait_name: self.abi_encode_call_path.clone(),
                     type_arguments: vec![],
                 }],
-            )
-        });
+            );
 
-        let all_fields_are_abi_decode = struct_decl.fields.iter().all(|field| {
-            if let TypeInfo::UnknownGeneric { .. } =
-                &*self.ctx.engines().te().get(field.type_argument.type_id)
-            {
+            if r {
                 return true;
             }
 
-            let handler = Handler::default();
-            let field_type = self
-                .ctx
-                .resolve_type(
-                    &handler,
-                    field.type_argument.initial_type_id,
-                    &Span::dummy(),
-                    EnforceTypeArguments::Yes,
-                    None,
-                )
-                .unwrap();
+            let field_type_id = self.apply_constraints(engines, field.type_argument.type_id, self.abi_encode_call_path.clone());
+            let r = self.ctx.check_type_impls_traits(
+                field_type_id,
+                &[TraitConstraint {
+                    trait_name: self.abi_encode_call_path.clone(),
+                    type_arguments: vec![],
+                }],
+            );
 
-            self.ctx.check_type_impls_traits(
-                field_type,
+            dbg!(&field.name, engines.help_out(field_type_id), r);
+
+            r
+        });
+
+        let all_fields_are_abi_decode = struct_decl.fields.iter().all(|field| {
+            let r = self.ctx.check_type_impls_traits(
+                field.type_argument.type_id,
                 &[TraitConstraint {
                     trait_name: self.abi_decode_call_path.clone(),
                     type_arguments: vec![],
                 }],
-            )
+            );
+
+            if r {
+                return true;
+            }
+
+            let field_type_id = self.apply_constraints(engines, field.type_argument.type_id, self.abi_decode_call_path.clone());
+            let r = self.ctx.check_type_impls_traits(
+                field_type_id,
+                &[TraitConstraint {
+                    trait_name: self.abi_decode_call_path.clone(),
+                    type_arguments: vec![],
+                }],
+            );
+
+            dbg!(&field.name, engines.help_out(field_type_id), r);
+
+            r
         });
 
         (all_fields_are_abi_encode, all_fields_are_abi_decode)
@@ -677,7 +584,7 @@ impl<'a, 'b> AutoImplAbiEncodeContext<'a, 'b> {
         for f in decl.fields.iter() {
             code.push_str(&format!("{field_name}: buffer.decode::<{field_type_name}>(),", 
                 field_name = f.name.as_str(),
-                field_type_name = engines.help_out(f.type_argument.type_id),
+                field_type_name = self.generate_type(engines, f.type_argument.type_id),
             ));
         }
 
@@ -692,12 +599,12 @@ impl<'a, 'b> AutoImplAbiEncodeContext<'a, 'b> {
                 if engines.te().get(x.type_argument.type_id).is_unit() {
                     format!("{} => {}::{}, \n", x.tag, enum_name, name)
                 } else {
-                    let variant_type_id = engines.help_out(x.type_argument.type_id);
+                    let variant_type_name = self.generate_type(engines, x.type_argument.type_id);
                     format!("{tag_value} => {enum_name}::{variant_name}(buffer.decode::<{variant_type}>()), \n", 
                         tag_value = x.tag, 
                         enum_name = enum_name, 
                         variant_name = name,
-                        variant_type = variant_type_id
+                        variant_type = variant_type_name
                     )
                 }
             })
@@ -721,7 +628,6 @@ impl<'a, 'b> AutoImplAbiEncodeContext<'a, 'b> {
                         {tag_value}u64.abi_encode(buffer);
                     }}, \n", tag_value = x.tag, enum_name = enum_name, variant_name = name)
                 } else {
-                    let variant_type_id = engines.help_out(x.type_argument.type_id);
                     format!("{enum_name}::{variant_name}(value) => {{
                         {tag_value}u64.abi_encode(buffer);
                         value.abi_encode(buffer);
@@ -810,12 +716,15 @@ impl<'a, 'b> AutoImplAbiEncodeContext<'a, 'b> {
 
         let ctx = self.ctx.by_ref();
         let decl = TyDecl::type_check(&handler, ctx, Declaration::ImplTrait(decl)).unwrap();
-        assert!(!handler.has_errors(), "{:?}", handler);
 
-        Some(TyAstNode {
-            content: ty::TyAstNodeContent::Declaration(decl),
-            span: Span::dummy(),
-        })
+        if handler.has_errors() {
+            None
+        } else {
+            Some(TyAstNode {
+                content: ty::TyAstNodeContent::Declaration(decl),
+                span: Span::dummy(),
+            })
+        }
     }
 
     // Auto implements AbiEncode and AbiDecode for structs and returns their `AstNode`s.
@@ -824,41 +733,58 @@ impl<'a, 'b> AutoImplAbiEncodeContext<'a, 'b> {
         engines: &Engines,
         decl: &TyDecl,
     ) -> (Option<TyAstNode>, Option<TyAstNode>) {
-        let (impl_encode, impl_decode) = self.can_auto_impl_struct(decl);
-        // println!(
-        //     "auto_impl_struct: {} {} {}",
-        //     decl.friendly_name(engines),
-        //     impl_encode,
-        //     impl_decode
-        // );
-
-        if !impl_encode && !impl_decode {
+        if matches!(self.ctx.namespace.root().module.name.as_ref(), Some(x) if x.as_str() == "core")
+        {
             return (None, None);
         }
 
         let implementing_for_decl_ref = decl.get_struct_decl_ref().unwrap();
         let struct_decl = self.ctx.engines().de().get(implementing_for_decl_ref.id());
 
-        (
-            impl_encode
-                .then(|| {
-                    let abi_decode_body = self.generate_abi_encode_struct_body(engines, &struct_decl);
-                    let abi_decode_code = self.generate_abi_encode_code(struct_decl.name(), &struct_decl.type_parameters, abi_decode_body);
-                    self.parse_item_impl_to_typed_ast_node(engines, &abi_decode_code)
-                })
-                .flatten(),
-            impl_decode
-                .then(|| {
-                    let abi_decode_body = self.generate_abi_decode_struct_body(engines, &struct_decl);
-                    let abi_decode_code = self.generate_abi_decode_code(struct_decl.name(), &struct_decl.type_parameters, abi_decode_body);
-                    self.parse_item_impl_to_typed_ast_node(engines, &abi_decode_code)
-                })
-                .flatten(),
-        )
+        let abi_encode_body = self.generate_abi_encode_struct_body(engines, &struct_decl);
+        let abi_encode_code = self.generate_abi_encode_code(struct_decl.name(), &struct_decl.type_parameters, abi_encode_body);
+        let abi_encode_node = self.parse_item_impl_to_typed_ast_node(engines, &abi_encode_code);
+
+        let abi_decode_body = self.generate_abi_decode_struct_body(engines, &struct_decl);
+        let abi_decode_code = self.generate_abi_decode_code(struct_decl.name(), &struct_decl.type_parameters, abi_decode_body);
+        let abi_decode_node = self.parse_item_impl_to_typed_ast_node(engines, &abi_decode_code);
+
+        (abi_encode_node, abi_decode_node)
+    }
+
+    fn apply_constraints(&mut self, engines: &Engines, type_id: TypeId, trait_name: CallPath) -> TypeId {
+        let type_info = self.ctx.engines().te().get(type_id);
+
+        let handler = Handler::default();
+
+        let variant_type_info = type_info.apply_constraints(&handler, engines, &[TraitConstraint {
+            trait_name,
+            type_arguments: vec![],
+        }]);
+
+        assert!(!handler.has_errors(), "{:?}", handler);
+        
+        let variant_type_info = variant_type_info.unwrap();
+        dbg!(engines.help_out(&variant_type_info));
+        dbg!(&variant_type_info);
+
+        let type_id = engines.te().insert(engines, variant_type_info, None);
+
+        // let type_id = self.ctx
+        //     .resolve_type(
+        //         &handler,
+        //         type_id,
+        //         &Span::dummy(),
+        //         EnforceTypeArguments::No,
+        //         None,
+        //     ).unwrap();
+        // assert!(!handler.has_errors(), "{:?}", handler);
+
+        type_id
     }
 
     /// Verify if an enum has all variants that can be implement AbiEncode and AbiDecode.
-    fn can_auto_impl_enum(&mut self, decl: &ty::TyDecl) -> (bool, bool) {
+    fn can_auto_impl_enum(&mut self, engines: &Engines, decl: &ty::TyDecl) -> (bool, bool) {
         if matches!(self.ctx.namespace.root().module.name.as_ref(), Some(x) if x.as_str() == "core")
         {
             return (false, false);
@@ -872,146 +798,89 @@ impl<'a, 'b> AutoImplAbiEncodeContext<'a, 'b> {
             return (false, false);
         };
 
-        let all_variants_are_abi_encode = enum_decl.variants.iter().all(|variant| {
-            // If the variant is the generic argument of the enum, we are ok
-            // because we will constraint it later
-            if self
-                .ctx
-                .engines()
-                .te()
-                .get(variant.type_argument.type_id)
-                .is_unknown_generic()
-            {
-                return true;
-            }
+        if enum_decl.name().as_str().contains("SomeEnum") {
+            dbg!(&enum_decl);
+        }
 
-            self.ctx.check_type_impls_traits(
+        let all_variants_are_abi_encode = enum_decl.variants.iter().all(|variant| {
+            let r = self.ctx.check_type_impls_traits(
                 variant.type_argument.type_id,
                 &[TraitConstraint {
                     trait_name: self.abi_encode_call_path.clone(),
                     type_arguments: vec![],
                 }],
-            )
-        });
+            );
 
-        let all_variants_are_abi_decode = enum_decl.variants.iter().all(|variant| {
-            // If the variant is the generic argument of the enum, we are ok
-            // because we will constraint it later
-            if self
-                .ctx
-                .engines()
-                .te()
-                .get(variant.type_argument.type_id)
-                .is_unknown_generic()
-            {
+            if r {
                 return true;
             }
 
-            self.ctx.check_type_impls_traits(
+            let variant_type_id = self.apply_constraints(engines, variant.type_argument.type_id, self.abi_encode_call_path.clone());
+            let r = self.ctx.check_type_impls_traits(
+                variant_type_id,
+                &[TraitConstraint {
+                    trait_name: self.abi_encode_call_path.clone(),
+                    type_arguments: vec![],
+                }],
+            );
+
+            dbg!(&variant.name, engines.help_out(variant.type_argument.type_id), r);
+
+            r
+        });
+
+        let all_variants_are_abi_decode = enum_decl.variants.iter().all(|variant| {
+            let r = self.ctx.check_type_impls_traits(
                 variant.type_argument.type_id,
                 &[TraitConstraint {
                     trait_name: self.abi_decode_call_path.clone(),
                     type_arguments: vec![],
                 }],
-            )
+            );
+
+            if r {
+                return true;
+            }
+
+            let variant_type_id = self.apply_constraints(engines, variant.type_argument.type_id, self.abi_decode_call_path.clone());
+            let r = self.ctx.check_type_impls_traits(
+                variant_type_id,
+                &[TraitConstraint {
+                    trait_name: self.abi_decode_call_path.clone(),
+                    type_arguments: vec![],
+                }],
+            );
+
+            dbg!(&variant.name, r);
+
+            r
         });
 
         (all_variants_are_abi_encode, all_variants_are_abi_decode)
     }
 
-    fn call_abi_decode(engines: &Engines, ty: TypeArgument, as_trait: TypeId) -> Expression {
-        let arguments = vec![Expression::ambiguous_variable_expression(
-            Ident::new_no_span("buffer".into()),
-        )];
-        // Expression::call_associated_function_as_trait(
-        //     ty,
-        //     as_trait,
-        //     Ident::new_no_span("abi_decode".into()),
-        //     arguments,
-        // )
-
-        // Expression {
-        //     kind: ExpressionKind::FunctionApplication(Box::new(FunctionApplicationExpression {
-        //         call_path_binding: TypeBinding {
-        //             inner: CallPath {
-        //                 prefixes: vec![
-        //                     Ident::new_no_span("core".into()),
-        //                     Ident::new_no_span("codec".into())
-        //                 ],
-        //                 suffix: Ident::new_no_span("abi_decode_with_buffer".into()),
-        //                 is_absolute: false
-        //             },
-        //             type_arguments: TypeArgs::Regular(vec![]),
-        //             span: Span::dummy(),
-        //         },
-        //         arguments,
-        //     })),
-        //     span: Span::dummy(),
-        // }
-
-        Expression {
-            kind: ExpressionKind::MethodApplication(Box::new(MethodApplicationExpression {
-                method_name_binding: TypeBinding {
-                    inner: MethodName::FromModule {
-                        method_name: Ident::new_no_span("decode".into()),
-                    },
-                    type_arguments: TypeArgs::Regular(vec![ty]),
-                    span: Span::dummy(),
-                },
-                contract_call_params: vec![],
-                arguments,
-            })),
-            span: Span::dummy(),
-        }
-    }
-
-    fn call_abi_decode_with_type_info(ty: TypeInfo, name: BaseIdent) -> Expression {
-        Expression::call_associated_function(
-            (ty, name),
-            Ident::new_no_span("abi_decode".into()),
-            vec![Expression::ambiguous_variable_expression(
-                Ident::new_no_span("buffer".into()),
-            )],
-        )
-    }
-
-    // Auto implements AbiEncode and AbiDecode for enums and returns their `AstNode`
     fn auto_impl_enum(
         &mut self,
         engines: &Engines,
         decl: &TyDecl,
     ) -> (Option<TyAstNode>, Option<TyAstNode>) {
-        let (impl_encode, impl_decode) = self.can_auto_impl_enum(decl);
-        // println!(
-        //     "auto_impl_enum: {} {} {}",
-        //     decl.friendly_name(engines),
-        //     impl_encode,
-        //     impl_decode
-        // );
-
-        if !impl_encode && !impl_decode {
+        if matches!(self.ctx.namespace.root().module.name.as_ref(), Some(x) if x.as_str() == "core")
+        {
             return (None, None);
         }
 
         let enum_decl_ref = decl.get_enum_decl_ref().unwrap();
         let enum_decl = self.ctx.engines().de().get(enum_decl_ref.id());
 
-        (
-            impl_encode
-                .then(|| {
-                    let abi_decode_body = self.generate_abi_encode_enum_body(engines, &enum_decl);
-                    let abi_decode_code = self.generate_abi_encode_code(enum_decl.name(), &enum_decl.type_parameters, abi_decode_body);
-                    self.parse_item_impl_to_typed_ast_node(engines, &abi_decode_code)
-                })
-                .flatten(),
-            impl_decode
-                .then(|| {
-                    let abi_decode_body = self.generate_abi_decode_enum_body(engines, &enum_decl);
-                    let abi_decode_code = self.generate_abi_decode_code(enum_decl.name(), &enum_decl.type_parameters, abi_decode_body);
-                    self.parse_item_impl_to_typed_ast_node(engines, &abi_decode_code)
-                })
-                .flatten(),
-        )
+        let abi_decode_body = self.generate_abi_encode_enum_body(engines, &enum_decl);
+        let abi_decode_code = self.generate_abi_encode_code(enum_decl.name(), &enum_decl.type_parameters, abi_decode_body);
+        let abi_encode_node = self.parse_item_impl_to_typed_ast_node(engines, &abi_decode_code);
+
+        let abi_decode_body = self.generate_abi_decode_enum_body(engines, &enum_decl);
+        let abi_decode_code = self.generate_abi_decode_code(enum_decl.name(), &enum_decl.type_parameters, abi_decode_body);
+        let abi_decode_node = self.parse_item_impl_to_typed_ast_node(engines, &abi_decode_code);
+
+        (abi_encode_node, abi_decode_node)
     }
 
     pub fn generate(
@@ -1031,11 +900,71 @@ impl<'a, 'b> AutoImplAbiEncodeContext<'a, 'b> {
 
     fn generate_type(&self, engines: &Engines, type_id: TypeId) -> String {
         match &*engines.te().get(type_id) {
-            TypeInfo::Tuple(t) if t.len() == 1 => {
-                let type_id = t[0].type_id.clone();
-                format!("({},)", self.generate_type(engines, type_id))
-            },
-            _ => engines.help_out(type_id).to_string()
+            TypeInfo::UnknownGeneric { name, .. } => name.to_string(),
+            TypeInfo::Placeholder(type_param) => type_param.name_ident.to_string(),
+            TypeInfo::StringSlice => "str".into(),
+            TypeInfo::StringArray(x) => format!("str[{}]", x.val()),
+            TypeInfo::UnsignedInteger(x) => match x {
+                IntegerBits::Eight => "u8",
+                IntegerBits::Sixteen => "u16",
+                IntegerBits::ThirtyTwo => "u32",
+                IntegerBits::SixtyFour => "u64",
+                IntegerBits::V256 => "u256",
+            }
+            .into(),
+            TypeInfo::Boolean => "bool".into(),
+            TypeInfo::Custom {
+                qualified_call_path: call_path,
+                ..
+            } => call_path.call_path.suffix.to_string(),
+            TypeInfo::Tuple(fields) => {
+                if fields.is_empty() {
+                    return format!("()");
+                }
+                let field_strs = fields
+                    .iter()
+                    .map(|field|  self.generate_type(engines, field.type_id))
+                    .collect::<Vec<_>>();
+                format!("({},)", field_strs.join(", "))
+            }
+            TypeInfo::B256 => "b256".into(),
+            TypeInfo::Enum(decl_ref) => {
+                let decl = engines.de().get(decl_ref.id());
+
+                let type_parameters = decl.type_parameters.iter().map(|x| {
+                    self.generate_type(engines, x.type_id)
+                }).join(", ");
+
+                let type_parameters = if !type_parameters.is_empty() {
+                    format!("<{type_parameters}>")
+                } else {
+                    type_parameters
+                };
+
+                format!("{}{type_parameters}", decl.call_path.suffix.as_str())
+            }
+            TypeInfo::Struct(decl_ref) => {
+                let decl = engines.de().get(decl_ref.id());
+                
+                let type_parameters = decl.type_parameters.iter().map(|x| {
+                    self.generate_type(engines, x.type_id)
+                }).join(", ");
+
+                let type_parameters = if !type_parameters.is_empty() {
+                    format!("<{type_parameters}>")
+                } else {
+                    type_parameters
+                };
+
+                format!("{}{type_parameters}", decl.call_path.suffix.as_str())
+            }
+            TypeInfo::Array(elem_ty, count) => {
+                format!("[{}; {}]",  self.generate_type(engines, elem_ty.type_id), count.val())
+            }
+            TypeInfo::RawUntypedPtr => "raw_ptr".into(),
+            TypeInfo::RawUntypedSlice => "raw_slice".into(),
+            TypeInfo::Alias { name, .. } => name.to_string(),
+            _ => todo!()
         }
     }
 
