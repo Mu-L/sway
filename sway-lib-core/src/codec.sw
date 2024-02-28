@@ -734,6 +734,20 @@ where
     }
 }
 
+impl<T> AbiDecode for [T; 4]
+where
+    T: AbiDecode
+{
+    fn abi_decode(ref mut buffer: BufferReader) -> [T; 4] {
+        [
+            T::abi_decode(buffer),
+            T::abi_decode(buffer),
+            T::abi_decode(buffer),
+            T::abi_decode(buffer),
+        ]
+    }
+}
+
 impl AbiDecode for () {
     fn abi_decode(ref mut _buffer: BufferReader) -> () {
         ()

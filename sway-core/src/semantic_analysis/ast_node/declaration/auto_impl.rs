@@ -181,11 +181,7 @@ impl<'a, 'b> AutoImplAbiEncodeContext<'a, 'b> {
         )
         .ok()?;
 
-        if handler.has_errors() {
-            dbg!(std::backtrace::Backtrace::force_capture());
-        }
-
-        assert!(
+         assert!(
             !handler.has_errors(),
             "{:?} {:?} {:#?}",
             handler,
@@ -1166,8 +1162,8 @@ impl<'a, 'b> AutoImplAbiEncodeContext<'a, 'b> {
             encode::<{return_type}>(result)
         }}");
 
-        println!("Generate Script Entry");
-        println!("---------------------");
+        // println!("Generate Script Entry");
+        // println!("---------------------");
         self.parse_item_fn_to_typed_ast_node(engines, FunctionDeclarationKind::Entry, &code)
     }
 }

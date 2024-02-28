@@ -704,6 +704,7 @@ pub(crate) fn monomorphize_method_application(
             type_binding.as_mut().unwrap().type_arguments.to_vec_mut(),
         )?;
         let mut method = (*decl_engine.get_function(fn_ref)).clone();
+        method.is_trait_method_dummy = false;
 
         // unify the types of the arguments with the types of the parameters from the function declaration
         *arguments =
