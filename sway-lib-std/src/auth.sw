@@ -6,7 +6,8 @@ use ::contract_id::ContractId;
 use ::identity::Identity;
 use ::option::Option::{self, *};
 use ::result::Result::{self, *};
-use ::inputs::{Input, input_coin_owner, input_count, input_type};
+use ::inputs::{Input, input_coin_owner, input_count, input_message_recipient, input_type};
+use ::revert::revert;
 
 /// The error type used when an `Identity` cannot be determined.
 pub enum AuthError {
@@ -134,7 +135,7 @@ pub fn msg_sender() -> Result<Identity, AuthError> {
 pub fn caller_address() -> Result<Address, AuthError> {
     let inputs = input_count();
     let mut candidate = None;
-    let mut i = 0u8;
+    let mut i = 0u16;
 
     // Note: `inputs_count` is guaranteed to be at least 1 for any valid tx.
     while i < inputs {
@@ -144,7 +145,7 @@ pub fn caller_address() -> Result<Address, AuthError> {
             Input::Message => (),
             _ => {
                 // type != InputCoin or InputMessage, continue looping.
-                i += 1u8;
+                i += 1u16;
                 continue;
             }
         }
@@ -154,7 +155,7 @@ pub fn caller_address() -> Result<Address, AuthError> {
         if candidate.is_none() {
             // This is the first input seen of the correct type.
             candidate = owner_of_input;
-            i += 1u8;
+            i += 1u16;
             continue;
         }
 
@@ -163,7 +164,7 @@ pub fn caller_address() -> Result<Address, AuthError> {
         // at this point, so we can unwrap safely.
         if owner_of_input.unwrap() == candidate.unwrap() {
             // Owners are a match, continue looping.
-            i += 1u8;
+            i += 1u16;
             continue;
         }
 
@@ -206,5 +207,13 @@ pub fn predicate_address() -> Address {
         r1: u64
     };
 
-    input_coin_owner(predicate_index).unwrap()
+    let type_of_input = input_type(predicate_index);
+
+    match type_of_input {
+        Input::Coin => input_coin_owner(predicate_index).unwrap(),
+        Input::Message => input_message_recipient(predicate_index),
+        _ => {
+            revert(0)
+        }
+    }
 }

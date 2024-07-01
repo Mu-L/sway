@@ -1,3 +1,5 @@
+use std::fmt;
+
 use super::{
     module::Module, namespace::Namespace, trait_map::TraitMap, Ident, ResolvedTraitImplItem,
 };
@@ -7,7 +9,7 @@ use crate::{
     language::{
         parsed::*,
         ty::{self, TyDecl, TyTraitItem},
-        CallPath,
+        CallPath, Visibility,
     },
     namespace::ModulePath,
     TypeId, TypeInfo,
@@ -19,16 +21,101 @@ use sway_error::{
 use sway_types::{Named, Spanned};
 use sway_utils::iter_prefixes;
 
+#[derive(Clone, Debug)]
 pub enum ResolvedDeclaration {
     Parsed(Declaration),
     Typed(ty::TyDecl),
 }
 
+impl DisplayWithEngines for ResolvedDeclaration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, engines: &Engines) -> fmt::Result {
+        match self {
+            ResolvedDeclaration::Parsed(decl) => DisplayWithEngines::fmt(decl, f, engines),
+            ResolvedDeclaration::Typed(decl) => DisplayWithEngines::fmt(decl, f, engines),
+        }
+    }
+}
+
+impl DebugWithEngines for ResolvedDeclaration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, engines: &Engines) -> fmt::Result {
+        match self {
+            ResolvedDeclaration::Parsed(decl) => DebugWithEngines::fmt(decl, f, engines),
+            ResolvedDeclaration::Typed(decl) => DebugWithEngines::fmt(decl, f, engines),
+        }
+    }
+}
+
+impl PartialEqWithEngines for ResolvedDeclaration {
+    fn eq(&self, other: &Self, ctx: &PartialEqWithEnginesContext) -> bool {
+        match (self, other) {
+            (ResolvedDeclaration::Parsed(lhs), ResolvedDeclaration::Parsed(rhs)) => {
+                lhs.eq(rhs, ctx)
+            }
+            (ResolvedDeclaration::Typed(lhs), ResolvedDeclaration::Typed(rhs)) => lhs.eq(rhs, ctx),
+            // TODO: Right now we consider differently represented resolved declarations to not be
+            // equal. This is only used for comparing paths when doing imports, and we will be able
+            // to safely remove it once we introduce normalized paths.
+            (ResolvedDeclaration::Parsed(_lhs), ResolvedDeclaration::Typed(_rhs)) => false,
+            (ResolvedDeclaration::Typed(_lhs), ResolvedDeclaration::Parsed(_rhs)) => false,
+        }
+    }
+}
+
 impl ResolvedDeclaration {
+    pub fn expect_parsed(self) -> Declaration {
+        match self {
+            ResolvedDeclaration::Parsed(decl) => decl,
+            ResolvedDeclaration::Typed(_ty_decl) => panic!(),
+        }
+    }
+
     pub fn expect_typed(self) -> ty::TyDecl {
         match self {
             ResolvedDeclaration::Parsed(_) => panic!(),
             ResolvedDeclaration::Typed(ty_decl) => ty_decl,
+        }
+    }
+
+    pub fn expect_typed_ref(&self) -> &ty::TyDecl {
+        match self {
+            ResolvedDeclaration::Parsed(_) => panic!(),
+            ResolvedDeclaration::Typed(ty_decl) => ty_decl,
+        }
+    }
+
+    pub(crate) fn visibility(&self, engines: &Engines) -> Visibility {
+        match self {
+            ResolvedDeclaration::Parsed(decl) => decl.visibility(engines.pe()),
+            ResolvedDeclaration::Typed(decl) => decl.visibility(engines.de()),
+        }
+    }
+
+    fn span(&self, engines: &Engines) -> sway_types::Span {
+        match self {
+            ResolvedDeclaration::Parsed(decl) => decl.span(engines),
+            ResolvedDeclaration::Typed(decl) => decl.span(engines),
+        }
+    }
+
+    pub(crate) fn return_type(
+        &self,
+        handler: &Handler,
+        engines: &Engines,
+    ) -> Result<TypeId, ErrorEmitted> {
+        match self {
+            ResolvedDeclaration::Parsed(_decl) => unreachable!(),
+            ResolvedDeclaration::Typed(decl) => decl.return_type(handler, engines),
+        }
+    }
+
+    fn is_trait(&self) -> bool {
+        match self {
+            ResolvedDeclaration::Parsed(decl) => {
+                matches!(decl, Declaration::TraitDeclaration(_))
+            }
+            ResolvedDeclaration::Typed(decl) => {
+                matches!(decl, TyDecl::TraitDecl(_))
+            }
         }
     }
 }
@@ -64,14 +151,11 @@ impl Root {
     ) -> Result<(), ErrorEmitted> {
         self.check_module_privacy(handler, engines, src)?;
 
-        let decl_engine = engines.de();
-
         let src_mod = self.module.lookup_submodule(handler, engines, src)?;
-
         let implemented_traits = src_mod.current_items().implemented_traits.clone();
         let mut symbols_and_decls = vec![];
         for (symbol, decl) in src_mod.current_items().symbols.iter() {
-            if is_ancestor(src, dst) || decl.visibility(decl_engine).is_public() {
+            if is_ancestor(src, dst) || decl.visibility(engines).is_public() {
                 symbols_and_decls.push((symbol.clone(), decl.clone()));
             }
         }
@@ -81,12 +165,15 @@ impl Root {
             .current_items_mut()
             .implemented_traits
             .extend(implemented_traits, engines);
-        for symbol_and_decl in symbols_and_decls {
-            dst_mod
-                .current_items_mut()
-                .use_glob_synonyms
-                .insert(symbol_and_decl.0, (src.to_vec(), symbol_and_decl.1));
-        }
+
+        symbols_and_decls.iter().for_each(|(symbol, decl)| {
+            dst_mod.current_items_mut().insert_glob_use_symbol(
+                engines,
+                symbol.clone(),
+                src.to_vec(),
+                decl,
+            )
+        });
 
         Ok(())
     }
@@ -122,42 +209,52 @@ impl Root {
     ) -> Result<(), ErrorEmitted> {
         self.check_module_privacy(handler, engines, src)?;
 
-        let decl_engine = engines.de();
-
         let src_mod = self.module.lookup_submodule(handler, engines, src)?;
         let mut impls_to_insert = TraitMap::default();
         match src_mod.current_items().symbols.get(item).cloned() {
             Some(decl) => {
-                if !decl.visibility(decl_engine).is_public() && !is_ancestor(src, dst) {
+                if !decl.visibility(engines).is_public() && !is_ancestor(src, dst) {
                     handler.emit_err(CompileError::ImportPrivateSymbol {
                         name: item.clone(),
                         span: item.span(),
                     });
                 }
 
-                //  if this is an enum or struct or function, import its implementations
-                if let Ok(type_id) = decl.return_type(&Handler::default(), engines) {
-                    impls_to_insert.extend(
-                        src_mod
-                            .current_items()
-                            .implemented_traits
-                            .filter_by_type_item_import(type_id, engines),
-                        engines,
-                    );
+                // We only handle trait imports when handling typed declarations,
+                // that is, when performing type-checking, and not when collecting.
+                // Update this once the type system is updated to refer to parsed
+                // declarations.
+                let handle_trait_import = match decl {
+                    ResolvedDeclaration::Parsed(_) => false,
+                    ResolvedDeclaration::Typed(_) => true,
+                };
+
+                if handle_trait_import {
+                    //  if this is an enum or struct or function, import its implementations
+                    if let Ok(type_id) = decl.return_type(&Handler::default(), engines) {
+                        impls_to_insert.extend(
+                            src_mod
+                                .current_items()
+                                .implemented_traits
+                                .filter_by_type_item_import(type_id, engines),
+                            engines,
+                        );
+                    }
+                    // if this is a trait, import its implementations
+                    let decl_span = decl.span(engines);
+                    if decl.is_trait() {
+                        // TODO: we only import local impls from the source namespace
+                        // this is okay for now but we'll need to device some mechanism to collect all available trait impls
+                        impls_to_insert.extend(
+                            src_mod
+                                .current_items()
+                                .implemented_traits
+                                .filter_by_trait_decl_span(decl_span),
+                            engines,
+                        );
+                    }
                 }
-                // if this is a trait, import its implementations
-                let decl_span = decl.span(engines);
-                if let TyDecl::TraitDecl(_) = &decl {
-                    // TODO: we only import local impls from the source namespace
-                    // this is okay for now but we'll need to device some mechanism to collect all available trait impls
-                    impls_to_insert.extend(
-                        src_mod
-                            .current_items()
-                            .implemented_traits
-                            .filter_by_trait_decl_span(decl_span),
-                        engines,
-                    );
-                }
+
                 // no matter what, import it this way though.
                 let dst_mod = self.module.lookup_submodule_mut(handler, engines, dst)?;
                 let check_name_clash = |name| {
@@ -165,6 +262,7 @@ impl Root {
                         handler.emit_err(CompileError::ShadowsOtherSymbol { name: name.into() });
                     }
                 };
+
                 match alias {
                     Some(alias) => {
                         check_name_clash(&alias);
@@ -216,80 +314,167 @@ impl Root {
         self.check_module_privacy(handler, engines, src)?;
 
         let decl_engine = engines.de();
+        let parsed_decl_engine = engines.pe();
 
         let src_mod = self.module.lookup_submodule(handler, engines, src)?;
         match src_mod.current_items().symbols.get(enum_name).cloned() {
             Some(decl) => {
-                if !decl.visibility(decl_engine).is_public() && !is_ancestor(src, dst) {
+                if !decl.visibility(engines).is_public() && !is_ancestor(src, dst) {
                     handler.emit_err(CompileError::ImportPrivateSymbol {
                         name: enum_name.clone(),
                         span: enum_name.span(),
                     });
                 }
 
-                if let TyDecl::EnumDecl(ty::EnumDecl { decl_id, .. }) = decl {
-                    let enum_decl = decl_engine.get_enum(&decl_id);
-                    let enum_ref = DeclRef::new(
-                        enum_decl.call_path.suffix.clone(),
-                        decl_id,
-                        enum_decl.span(),
-                    );
+                match decl {
+                    ResolvedDeclaration::Parsed(decl) => {
+                        if let Declaration::EnumDeclaration(decl_id) = decl {
+                            let enum_decl = parsed_decl_engine.get_enum(&decl_id);
 
-                    if let Some(variant_decl) =
-                        enum_decl.variants.iter().find(|v| v.name == *variant_name)
-                    {
-                        // import it this way.
-                        let dst_mod = self.module.lookup_submodule_mut(handler, engines, dst)?;
-                        let check_name_clash = |name| {
-                            if dst_mod.current_items().use_item_synonyms.contains_key(name) {
-                                handler.emit_err(CompileError::ShadowsOtherSymbol {
-                                    name: name.into(),
-                                });
+                            if let Some(variant_decl) =
+                                enum_decl.variants.iter().find(|v| v.name == *variant_name)
+                            {
+                                // import it this way.
+                                let dst_mod =
+                                    self.module.lookup_submodule_mut(handler, engines, dst)?;
+                                let check_name_clash = |name| {
+                                    if dst_mod.current_items().use_item_synonyms.contains_key(name)
+                                    {
+                                        handler.emit_err(CompileError::ShadowsOtherSymbol {
+                                            name: name.into(),
+                                        });
+                                    }
+                                };
+
+                                match alias {
+                                    Some(alias) => {
+                                        check_name_clash(&alias);
+                                        dst_mod.current_items_mut().use_item_synonyms.insert(
+                                            alias.clone(),
+                                            (
+                                                Some(variant_name.clone()),
+                                                src.to_vec(),
+                                                ResolvedDeclaration::Parsed(
+                                                    Declaration::EnumVariantDeclaration(
+                                                        EnumVariantDeclaration {
+                                                            enum_ref: decl_id,
+                                                            variant_name: variant_name.clone(),
+                                                            variant_decl_span: variant_decl
+                                                                .span
+                                                                .clone(),
+                                                        },
+                                                    ),
+                                                ),
+                                            ),
+                                        );
+                                    }
+                                    None => {
+                                        check_name_clash(variant_name);
+                                        dst_mod.current_items_mut().use_item_synonyms.insert(
+                                            variant_name.clone(),
+                                            (
+                                                None,
+                                                src.to_vec(),
+                                                ResolvedDeclaration::Parsed(
+                                                    Declaration::EnumVariantDeclaration(
+                                                        EnumVariantDeclaration {
+                                                            enum_ref: decl_id,
+                                                            variant_name: variant_name.clone(),
+                                                            variant_decl_span: variant_decl
+                                                                .span
+                                                                .clone(),
+                                                        },
+                                                    ),
+                                                ),
+                                            ),
+                                        );
+                                    }
+                                };
+                            } else {
+                                return Err(handler.emit_err(CompileError::SymbolNotFound {
+                                    name: variant_name.clone(),
+                                    span: variant_name.span(),
+                                }));
                             }
-                        };
-                        match alias {
-                            Some(alias) => {
-                                check_name_clash(&alias);
-                                dst_mod.current_items_mut().use_item_synonyms.insert(
-                                    alias.clone(),
-                                    (
-                                        Some(variant_name.clone()),
-                                        src.to_vec(),
-                                        TyDecl::EnumVariantDecl(ty::EnumVariantDecl {
-                                            enum_ref: enum_ref.clone(),
-                                            variant_name: variant_name.clone(),
-                                            variant_decl_span: variant_decl.span.clone(),
-                                        }),
-                                    ),
-                                );
-                            }
-                            None => {
-                                check_name_clash(variant_name);
-                                dst_mod.current_items_mut().use_item_synonyms.insert(
-                                    variant_name.clone(),
-                                    (
-                                        None,
-                                        src.to_vec(),
-                                        TyDecl::EnumVariantDecl(ty::EnumVariantDecl {
-                                            enum_ref: enum_ref.clone(),
-                                            variant_name: variant_name.clone(),
-                                            variant_decl_span: variant_decl.span.clone(),
-                                        }),
-                                    ),
-                                );
-                            }
-                        };
-                    } else {
-                        return Err(handler.emit_err(CompileError::SymbolNotFound {
-                            name: variant_name.clone(),
-                            span: variant_name.span(),
-                        }));
+                        }
                     }
-                } else {
-                    return Err(handler.emit_err(CompileError::Internal(
-                        "Attempting to import variants of something that isn't an enum",
-                        enum_name.span(),
-                    )));
+                    ResolvedDeclaration::Typed(decl) => {
+                        if let TyDecl::EnumDecl(ty::EnumDecl { decl_id, .. }) = decl {
+                            let enum_decl = decl_engine.get_enum(&decl_id);
+                            let enum_ref = DeclRef::new(
+                                enum_decl.call_path.suffix.clone(),
+                                decl_id,
+                                enum_decl.span(),
+                            );
+
+                            if let Some(variant_decl) =
+                                enum_decl.variants.iter().find(|v| v.name == *variant_name)
+                            {
+                                // import it this way.
+                                let dst_mod =
+                                    self.module.lookup_submodule_mut(handler, engines, dst)?;
+                                let check_name_clash = |name| {
+                                    if dst_mod.current_items().use_item_synonyms.contains_key(name)
+                                    {
+                                        handler.emit_err(CompileError::ShadowsOtherSymbol {
+                                            name: name.into(),
+                                        });
+                                    }
+                                };
+
+                                match alias {
+                                    Some(alias) => {
+                                        check_name_clash(&alias);
+                                        dst_mod.current_items_mut().use_item_synonyms.insert(
+                                            alias.clone(),
+                                            (
+                                                Some(variant_name.clone()),
+                                                src.to_vec(),
+                                                ResolvedDeclaration::Typed(
+                                                    TyDecl::EnumVariantDecl(ty::EnumVariantDecl {
+                                                        enum_ref: enum_ref.clone(),
+                                                        variant_name: variant_name.clone(),
+                                                        variant_decl_span: variant_decl
+                                                            .span
+                                                            .clone(),
+                                                    }),
+                                                ),
+                                            ),
+                                        );
+                                    }
+                                    None => {
+                                        check_name_clash(variant_name);
+                                        dst_mod.current_items_mut().use_item_synonyms.insert(
+                                            variant_name.clone(),
+                                            (
+                                                None,
+                                                src.to_vec(),
+                                                ResolvedDeclaration::Typed(
+                                                    TyDecl::EnumVariantDecl(ty::EnumVariantDecl {
+                                                        enum_ref: enum_ref.clone(),
+                                                        variant_name: variant_name.clone(),
+                                                        variant_decl_span: variant_decl
+                                                            .span
+                                                            .clone(),
+                                                    }),
+                                                ),
+                                            ),
+                                        );
+                                    }
+                                };
+                            } else {
+                                return Err(handler.emit_err(CompileError::SymbolNotFound {
+                                    name: variant_name.clone(),
+                                    span: variant_name.span(),
+                                }));
+                            }
+                        } else {
+                            return Err(handler.emit_err(CompileError::Internal(
+                                "Attempting to import variants of something that isn't an enum",
+                                enum_name.span(),
+                            )));
+                        }
+                    }
                 }
             }
             None => {
@@ -316,19 +501,49 @@ impl Root {
     ) -> Result<(), ErrorEmitted> {
         self.check_module_privacy(handler, engines, src)?;
 
+        let parsed_decl_engine = engines.pe();
         let decl_engine = engines.de();
 
         let src_mod = self.module.lookup_submodule(handler, engines, src)?;
-        match src_mod.current_items().symbols.get(enum_name).cloned() {
+        let resolved_decl = src_mod.current_items().symbols.get(enum_name).cloned();
+
+        match resolved_decl {
             Some(decl) => {
-                if !decl.visibility(decl_engine).is_public() && !is_ancestor(src, dst) {
+                if !decl.visibility(engines).is_public() && !is_ancestor(src, dst) {
                     handler.emit_err(CompileError::ImportPrivateSymbol {
                         name: enum_name.clone(),
                         span: enum_name.span(),
                     });
                 }
 
-                if let TyDecl::EnumDecl(ty::EnumDecl { decl_id, .. }) = decl {
+                if let ResolvedDeclaration::Parsed(Declaration::EnumDeclaration(decl_id)) = decl {
+                    let enum_decl = parsed_decl_engine.get_enum(&decl_id);
+
+                    for variant in enum_decl.variants.iter() {
+                        let variant_name = &variant.name;
+                        let variant_decl =
+                            Declaration::EnumVariantDeclaration(EnumVariantDeclaration {
+                                enum_ref: decl_id,
+                                variant_name: variant_name.clone(),
+                                variant_decl_span: variant.span.clone(),
+                            });
+
+                        // import it this way.
+                        self.module
+                            .lookup_submodule_mut(handler, engines, dst)?
+                            .current_items_mut()
+                            .insert_glob_use_symbol(
+                                engines,
+                                variant_name.clone(),
+                                src.to_vec(),
+                                &ResolvedDeclaration::Parsed(variant_decl),
+                            );
+                    }
+                } else if let ResolvedDeclaration::Typed(TyDecl::EnumDecl(ty::EnumDecl {
+                    decl_id,
+                    ..
+                })) = decl
+                {
                     let enum_decl = decl_engine.get_enum(&decl_id);
                     let enum_ref = DeclRef::new(
                         enum_decl.call_path.suffix.clone(),
@@ -338,20 +553,24 @@ impl Root {
 
                     for variant_decl in enum_decl.variants.iter() {
                         let variant_name = &variant_decl.name;
+                        let decl = ResolvedDeclaration::Typed(TyDecl::EnumVariantDecl(
+                            ty::EnumVariantDecl {
+                                enum_ref: enum_ref.clone(),
+                                variant_name: variant_name.clone(),
+                                variant_decl_span: variant_decl.span.clone(),
+                            },
+                        ));
 
                         // import it this way.
-                        let dst_mod = self.module.lookup_submodule_mut(handler, engines, dst)?;
-                        dst_mod.current_items_mut().use_glob_synonyms.insert(
-                            variant_name.clone(),
-                            (
+                        self.module
+                            .lookup_submodule_mut(handler, engines, dst)?
+                            .current_items_mut()
+                            .insert_glob_use_symbol(
+                                engines,
+                                variant_name.clone(),
                                 src.to_vec(),
-                                TyDecl::EnumVariantDecl(ty::EnumVariantDecl {
-                                    enum_ref: enum_ref.clone(),
-                                    variant_name: variant_name.clone(),
-                                    variant_decl_span: variant_decl.span.clone(),
-                                }),
-                            ),
-                        );
+                                &decl,
+                            );
                     }
                 } else {
                     return Err(handler.emit_err(CompileError::Internal(
@@ -386,8 +605,6 @@ impl Root {
     ) -> Result<(), ErrorEmitted> {
         self.check_module_privacy(handler, engines, src)?;
 
-        let decl_engine = engines.de();
-
         let src_mod = self.module.lookup_submodule(handler, engines, src)?;
 
         let implemented_traits = src_mod.current_items().implemented_traits.clone();
@@ -395,15 +612,17 @@ impl Root {
         let use_glob_synonyms = src_mod.current_items().use_glob_synonyms.clone();
 
         // collect all declared and reexported symbols from the source module
-        let mut all_symbols_and_decls = vec![];
-        for (symbol, (_, decl)) in src_mod.current_items().use_glob_synonyms.iter() {
-            all_symbols_and_decls.push((symbol.clone(), decl.clone()));
+        let mut all_symbols_and_decls: Vec<(Ident, ResolvedDeclaration)> = vec![];
+        for (symbol, decls) in src_mod.current_items().use_glob_synonyms.iter() {
+            decls
+                .iter()
+                .for_each(|(_, decl)| all_symbols_and_decls.push((symbol.clone(), decl.clone())));
         }
         for (symbol, (_, _, decl)) in src_mod.current_items().use_item_synonyms.iter() {
             all_symbols_and_decls.push((symbol.clone(), decl.clone()));
         }
         for (symbol, decl) in src_mod.current_items().symbols.iter() {
-            if is_ancestor(src, dst) || decl.visibility(decl_engine).is_public() {
+            if is_ancestor(src, dst) || decl.visibility(engines).is_public() {
                 all_symbols_and_decls.push((symbol.clone(), decl.clone()));
             }
         }
@@ -428,8 +647,14 @@ impl Root {
         for (symbol, (_, mod_path, decl)) in use_item_synonyms {
             symbols_paths_and_decls.push((symbol, get_path(mod_path), decl));
         }
-        for (symbol, (mod_path, decl)) in use_glob_synonyms {
-            symbols_paths_and_decls.push((symbol, get_path(mod_path), decl));
+        for (symbol, decls) in use_glob_synonyms {
+            decls.iter().for_each(|(mod_path, decl)| {
+                symbols_paths_and_decls.push((
+                    symbol.clone(),
+                    get_path(mod_path.clone()),
+                    decl.clone(),
+                ))
+            });
         }
 
         let dst_mod = self.module.lookup_submodule_mut(handler, engines, dst)?;
@@ -438,19 +663,18 @@ impl Root {
             .implemented_traits
             .extend(implemented_traits, engines);
 
-        let mut try_add = |symbol, path, decl: ty::TyDecl| {
+        let mut try_add = |symbol, path, decl: ResolvedDeclaration| {
             dst_mod
                 .current_items_mut()
-                .use_glob_synonyms
-                .insert(symbol, (path, decl));
+                .insert_glob_use_symbol(engines, symbol, path, &decl);
         };
 
         for (symbol, decl) in all_symbols_and_decls {
-            try_add(symbol, src.to_vec(), decl);
+            try_add(symbol.clone(), src.to_vec(), decl);
         }
 
         for (symbol, path, decl) in symbols_paths_and_decls {
-            try_add(symbol.clone(), path, decl.clone());
+            try_add(symbol.clone(), path, decl);
         }
 
         Ok(())
@@ -631,7 +855,8 @@ impl Root {
                         current_mod_path.push(ident.clone());
                     }
                     None => {
-                        decl_opt = Some(self.resolve_symbol_helper(handler, ident, module)?);
+                        decl_opt =
+                            Some(self.resolve_symbol_helper(handler, engines, ident, module)?);
                     }
                 }
             }
@@ -645,7 +870,7 @@ impl Root {
         self.module
             .lookup_submodule(handler, engines, mod_path)
             .and_then(|module| {
-                let decl = self.resolve_symbol_helper(handler, symbol, module)?;
+                let decl = self.resolve_symbol_helper(handler, engines, symbol, module)?;
                 Ok((decl, mod_path.to_vec()))
             })
     }
@@ -662,17 +887,12 @@ impl Root {
         self_type: Option<TypeId>,
     ) -> Result<ResolvedDeclaration, ErrorEmitted> {
         let type_info = self.decl_to_type_info(handler, engines, symbol, decl)?;
+        let type_id = engines
+            .te()
+            .insert(engines, type_info, symbol.span().source_id());
 
         self.resolve_associated_type_from_type_id(
-            handler,
-            engines,
-            module,
-            symbol,
-            engines
-                .te()
-                .insert(engines, type_info, symbol.span().source_id()),
-            as_trait,
-            self_type,
+            handler, engines, module, symbol, type_id, as_trait, self_type,
         )
     }
 
@@ -688,17 +908,12 @@ impl Root {
         self_type: Option<TypeId>,
     ) -> Result<ResolvedDeclaration, ErrorEmitted> {
         let type_info = self.decl_to_type_info(handler, engines, symbol, decl)?;
+        let type_id = engines
+            .te()
+            .insert(engines, type_info, symbol.span().source_id());
 
         self.resolve_associated_item_from_type_id(
-            handler,
-            engines,
-            module,
-            symbol,
-            engines
-                .te()
-                .insert(engines, type_info, symbol.span().source_id()),
-            as_trait,
-            self_type,
+            handler, engines, module, symbol, type_id, as_trait, self_type,
         )
     }
 
@@ -712,22 +927,8 @@ impl Root {
         match decl {
             ResolvedDeclaration::Parsed(_decl) => todo!(),
             ResolvedDeclaration::Typed(decl) => Ok(match decl.clone() {
-                ty::TyDecl::StructDecl(struct_ty_decl) => {
-                    let struct_decl = engines.de().get_struct(&struct_ty_decl.decl_id);
-                    TypeInfo::Struct(DeclRef::new(
-                        struct_decl.name().clone(),
-                        struct_ty_decl.decl_id,
-                        struct_decl.span().clone(),
-                    ))
-                }
-                ty::TyDecl::EnumDecl(enum_ty_decl) => {
-                    let enum_decl = engines.de().get_enum(&enum_ty_decl.decl_id);
-                    TypeInfo::Enum(DeclRef::new(
-                        enum_decl.name().clone(),
-                        enum_ty_decl.decl_id,
-                        enum_decl.span().clone(),
-                    ))
-                }
+                ty::TyDecl::StructDecl(struct_ty_decl) => TypeInfo::Struct(struct_ty_decl.decl_id),
+                ty::TyDecl::EnumDecl(enum_ty_decl) => TypeInfo::Enum(enum_ty_decl.decl_id),
                 ty::TyDecl::TraitTypeDecl(type_decl) => {
                     let type_decl = engines.de().get_type(&type_decl.decl_id);
                     (*engines.te().get(type_decl.ty.clone().unwrap().type_id)).clone()
@@ -801,20 +1002,64 @@ impl Root {
     fn resolve_symbol_helper(
         &self,
         handler: &Handler,
+        engines: &Engines,
         symbol: &Ident,
         module: &Module,
     ) -> Result<ResolvedDeclaration, ErrorEmitted> {
         // Check locally declared items. Any name clash with imports will have already been reported as an error.
         if let Some(decl) = module.current_items().symbols.get(symbol) {
-            return Ok(ResolvedDeclaration::Typed(decl.clone()));
+            return Ok(decl.clone());
+        }
+        // Check locally declared items. Any name clash with imports will have already been reported as an error.
+        if let Some(decl) = module.current_items().symbols.get(symbol) {
+            return Ok(decl.clone());
         }
         // Check item imports
         if let Some((_, _, decl)) = module.current_items().use_item_synonyms.get(symbol) {
-            return Ok(ResolvedDeclaration::Typed(decl.clone()));
+            return Ok(decl.clone());
         }
         // Check glob imports
-        if let Some((_, decl)) = module.current_items().use_glob_synonyms.get(symbol) {
-            return Ok(ResolvedDeclaration::Typed(decl.clone()));
+        if let Some(decls) = module.current_items().use_glob_synonyms.get(symbol) {
+            if decls.len() == 1 {
+                return Ok(decls[0].1.clone());
+            } else if decls.is_empty() {
+                return Err(handler.emit_err(CompileError::Internal(
+                    "The name {symbol} was bound in a star import, but no corresponding module paths were found",
+                    symbol.span(),
+                )));
+            } else {
+                // Symbol not found
+                return Err(handler.emit_err(CompileError::SymbolWithMultipleBindings {
+                    name: symbol.clone(),
+                    paths: decls
+                        .iter()
+                        .map(|(path, decl)| {
+                            let mut path_strs =
+                                path.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+                            // Add the enum name to the path if the decl is an enum variant.
+                            match decl {
+                                ResolvedDeclaration::Parsed(decl) => {
+                                    if let Declaration::EnumVariantDeclaration(decl) = decl {
+                                        let enum_ref = engines.pe().get_enum(&decl.enum_ref);
+                                        path_strs.push(enum_ref.name().to_string())
+                                    };
+                                }
+                                ResolvedDeclaration::Typed(decl) => {
+                                    if let TyDecl::EnumVariantDecl(ty::EnumVariantDecl {
+                                        enum_ref,
+                                        ..
+                                    }) = decl
+                                    {
+                                        path_strs.push(enum_ref.name().to_string())
+                                    };
+                                }
+                            }
+                            path_strs.join("::")
+                        })
+                        .collect(),
+                    span: symbol.span(),
+                }));
+            }
         }
         // Symbol not found
         Err(handler.emit_err(CompileError::SymbolNotFound {

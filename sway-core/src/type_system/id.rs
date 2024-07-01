@@ -6,18 +6,13 @@ use sway_error::{
 use sway_types::{BaseIdent, Span};
 
 use crate::{
-    engine_threading::{
-        DebugWithEngines, DisplayWithEngines, Engines, PartialEqWithEngines,
-        PartialEqWithEnginesContext, WithEngines,
-    },
+    decl_engine::DeclEngineGet,
+    engine_threading::{DebugWithEngines, DisplayWithEngines, Engines, WithEngines},
     language::CallPath,
     semantic_analysis::type_check_context::EnforceTypeArguments,
     semantic_analysis::TypeCheckContext,
     type_system::priv_prelude::*,
-    types::{
-        CollectTypesMetadata, CollectTypesMetadataContext, TypeMetadata,
-        UnconstrainedTypeParameters,
-    },
+    types::{CollectTypesMetadata, CollectTypesMetadataContext, TypeMetadata},
 };
 
 use std::{
@@ -26,6 +21,11 @@ use std::{
 };
 
 const EXTRACT_ANY_MAX_DEPTH: usize = 128;
+
+pub enum IncludeSelf {
+    Yes,
+    No,
+}
 
 /// A identifier to uniquely refer to our type terms
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Ord, PartialOrd, Debug)]
@@ -99,25 +99,6 @@ impl SubstTypes for TypeId {
     }
 }
 
-impl UnconstrainedTypeParameters for TypeId {
-    fn type_parameter_is_unconstrained(
-        &self,
-        engines: &Engines,
-        type_parameter: &TypeParameter,
-    ) -> bool {
-        let type_engine = engines.te();
-        let mut all_types: BTreeSet<TypeId> = self.extract_inner_types(engines);
-        all_types.insert(*self);
-        let type_parameter_info = type_engine.get(type_parameter.type_id);
-        all_types.iter().any(|type_id| {
-            type_engine.get(*type_id).eq(
-                &type_parameter_info,
-                &PartialEqWithEnginesContext::new(engines),
-            )
-        })
-    }
-}
-
 impl TypeId {
     pub(super) fn new(index: usize) -> TypeId {
         TypeId(index)
@@ -132,8 +113,8 @@ impl TypeId {
         let type_engine = engines.te();
         let decl_engine = engines.de();
         match &*type_engine.get(self) {
-            TypeInfo::Enum(decl_ref) => {
-                let decl = decl_engine.get_enum(decl_ref);
+            TypeInfo::Enum(decl_id) => {
+                let decl = decl_engine.get(decl_id);
                 (!decl.type_parameters.is_empty()).then_some(decl.type_parameters.clone())
             }
             TypeInfo::Struct(decl_ref) => {
@@ -265,8 +246,8 @@ impl TypeId {
                     );
                 }
             }
-            TypeInfo::Struct(struct_ref) => {
-                let struct_decl = decl_engine.get_struct(struct_ref);
+            TypeInfo::Struct(struct_id) => {
+                let struct_decl = decl_engine.get_struct(struct_id);
                 for type_param in &struct_decl.type_parameters {
                     extend(
                         &mut found,
@@ -422,15 +403,23 @@ impl TypeId {
     }
 
     /// Given a `TypeId` `self`, analyze `self` and return all inner
-    /// `TypeId`'s of `self`, not including `self`.
-    pub(crate) fn extract_inner_types(&self, engines: &Engines) -> BTreeSet<TypeId> {
-        fn filter_fn(_type_info: &TypeInfo) -> bool {
-            true
-        }
-        self.extract_any(engines, &filter_fn, 0)
+    /// `TypeId`'s of `self`.
+    pub(crate) fn extract_inner_types(
+        &self,
+        engines: &Engines,
+        include_self: IncludeSelf,
+    ) -> BTreeSet<TypeId> {
+        let mut set: BTreeSet<TypeId> = self
+            .extract_any(engines, &|_| true, 0)
             .keys()
             .copied()
-            .collect()
+            .collect();
+
+        if matches!(include_self, IncludeSelf::Yes) {
+            set.insert(*self);
+        }
+
+        set
     }
 
     pub(crate) fn extract_inner_types_with_trait_constraints(
@@ -448,7 +437,7 @@ impl TypeId {
     pub(crate) fn extract_nested_types(self, engines: &Engines) -> Vec<TypeInfo> {
         let type_engine = engines.te();
         let mut inner_types: Vec<TypeInfo> = self
-            .extract_inner_types(engines)
+            .extract_inner_types(engines, IncludeSelf::No)
             .into_iter()
             .map(|type_id| (*type_engine.get(type_id)).clone())
             .collect();
@@ -465,6 +454,20 @@ impl TypeId {
             TypeInfo::UnknownGeneric { .. } => Some(WithEngines::new(x, engines)),
             _ => None,
         }))
+    }
+
+    pub(crate) fn is_concrete(&self, engines: &Engines) -> bool {
+        let nested_types = (*self).extract_nested_types(engines);
+        !nested_types.into_iter().any(|x| {
+            matches!(
+                x,
+                TypeInfo::UnknownGeneric { .. }
+                    | TypeInfo::Custom { .. }
+                    | TypeInfo::Placeholder(..)
+                    | TypeInfo::TraitType { .. }
+                    | TypeInfo::TypeParam(..)
+            )
+        })
     }
 
     /// `check_type_parameter_bounds` does two types of checks. Lets use the example below for demonstrating the two checks:
@@ -654,5 +657,9 @@ impl TypeId {
             }
         }
         found_error
+    }
+
+    pub fn get_type_str(&self, engines: &Engines) -> String {
+        engines.te().get(*self).get_type_str(engines)
     }
 }

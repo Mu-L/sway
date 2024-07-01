@@ -4,9 +4,9 @@ use storage_access_abi::*;
 use std::hash::*;
 
 #[cfg(experimental_new_encoding = false)]
-const CONTRACT_ID = 0x0a58692bee60559887f0ac181c8a3b14ffb7a3a66256eec3f08e3135bfbecac9;
+const CONTRACT_ID = 0x3bc28acd66d327b8c1b9624c1fabfc07e9ffa1b5d71c2832c3bfaaf8f4b805e9;
 #[cfg(experimental_new_encoding = true)]
-const CONTRACT_ID = 0x4afce106db8ef3bac5e2ec3c87043dd1df9bfd961a7bb4bfb997377ea5f4159e;
+const CONTRACT_ID = 0xad4be8f8c517abaa781d488695e36f8dcaf4d609fc2723af4424ec78263163c1;
 
 fn main() -> bool {
     let caller = abi(StorageAccess, CONTRACT_ID);

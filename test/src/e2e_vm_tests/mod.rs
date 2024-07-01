@@ -10,6 +10,7 @@ use anyhow::{anyhow, bail, Result};
 use colored::*;
 use core::fmt;
 use forc_pkg::BuildProfile;
+use forc_test::decode_log_data;
 use fuel_vm::fuel_tx;
 use fuel_vm::prelude::*;
 use regex::Regex;
@@ -94,6 +95,7 @@ struct TestDescription {
     validate_abi: bool,
     validate_storage_slots: bool,
     supported_targets: HashSet<BuildTarget>,
+    expected_decoded_test_logs: Option<Vec<String>>,
     unsupported_profiles: Vec<&'static str>,
     checker: FileCheck,
     run_config: RunConfig,
@@ -274,6 +276,7 @@ impl TestContext {
             validate_storage_slots,
             checker,
             run_config,
+            expected_decoded_test_logs,
             ..
         } = test;
 
@@ -540,6 +543,8 @@ impl TestContext {
                     harness::compile_and_run_unit_tests(&name, &run_config, true).await;
                 *output = out;
 
+                let mut decoded_logs = vec![];
+
                 result.map(|tested_pkgs| {
                     let mut failed = vec![];
                     for pkg in tested_pkgs {
@@ -548,6 +553,32 @@ impl TestContext {
                                 println!("Test: {} {}", test.name, test.passed());
                                 for log in test.logs.iter() {
                                     println!("{:?}", log);
+                                }
+                            }
+
+                            if expected_decoded_test_logs.is_some() {
+                                for log in test.logs.iter() {
+                                    if let Receipt::LogData {
+                                        rb,
+                                        data: Some(data),
+                                        ..
+                                    } = log
+                                    {
+                                        let decoded_log_data = decode_log_data(
+                                            &rb.to_string(),
+                                            data,
+                                            &pkg.built.program_abi,
+                                        )
+                                        .unwrap();
+                                        let var_value = decoded_log_data.value;
+                                        if verbose {
+                                            println!(
+                                                "Decoded log value: {}, log rb: {}",
+                                                var_value, rb
+                                            );
+                                        }
+                                        decoded_logs.push(var_value);
+                                    }
                                 }
                             }
 
@@ -563,12 +594,20 @@ impl TestContext {
                         }
                     }
 
+                    let expected_decoded_test_logs = expected_decoded_test_logs.unwrap_or_default();
+
                     if !failed.is_empty() {
                         println!("FAILED!! output:\n{}", output);
                         panic!(
                             "For {name}\n{} tests failed:\n{}",
                             failed.len(),
                             failed.into_iter().collect::<String>()
+                        );
+                    } else if expected_decoded_test_logs != decoded_logs {
+                        println!("FAILED!! output:\n{}", output);
+                        panic!(
+                            "For {name}\ncollected decoded logs: {:?}\nexpected decoded logs: {:?}",
+                            decoded_logs, expected_decoded_test_logs
                         );
                     }
                 })
@@ -622,36 +661,6 @@ pub async fn run(filter_config: &FilterConfig, run_config: &RunConfig) -> Result
     }
     if filter_config.first_only && !tests.is_empty() {
         tests = vec![tests.remove(0)];
-    }
-
-    // Expand tests that need to run with multiple configurations.
-    // Be mindful that this can explode exponentially the number of tests
-    // that run because one expansion expands on top of another
-    let mut tests = tests;
-    let expansions: [&str; 0] = [];
-    for expansion in expansions {
-        tests = tests
-            .into_iter()
-            .flat_map(|t| {
-                let has_script_data_new_encoding = t.script_data_new_encoding.is_some();
-                let has_contracts = !t.contract_paths.is_empty();
-                let has_expected_return = t.expected_result_new_encoding.is_some();
-                if expansion == "new_encoding"
-                    && (has_script_data_new_encoding || has_contracts || has_expected_return)
-                {
-                    let mut with_new_encoding = t.clone();
-                    with_new_encoding.suffix = Some("New Encoding".into());
-
-                    let mut run_config_with_new_encoding = run_config.clone();
-                    run_config_with_new_encoding.experimental.new_encoding = true;
-                    with_new_encoding.run_config = run_config_with_new_encoding;
-
-                    vec![t, with_new_encoding]
-                } else {
-                    vec![t]
-                }
-            })
-            .collect();
     }
 
     // Run tests
@@ -834,7 +843,7 @@ fn check_file_checker(checker: filecheck::Checker, name: &String, output: &str) 
 fn parse_test_toml(path: &Path, run_config: &RunConfig) -> Result<TestDescription> {
     let toml_content_str = std::fs::read_to_string(path)?;
 
-    let file_check = FileCheck(toml_content_str.clone());
+    let mut file_check = FileCheck(toml_content_str.clone());
     let checker = file_check.build()?;
 
     let toml_content = toml_content_str.parse::<toml::Value>()?;
@@ -843,8 +852,17 @@ fn parse_test_toml(path: &Path, run_config: &RunConfig) -> Result<TestDescriptio
         bail!("Malformed test description.");
     }
 
-    let category = toml_content
-        .get("category")
+    // if new encoding is on, allow a "category_new_encoding"
+    // for tests that should have difference categories
+    let category = if run_config.experimental.new_encoding {
+        toml_content
+            .get("category_new_encoding")
+            .or_else(|| toml_content.get("category"))
+    } else {
+        toml_content.get("category")
+    };
+
+    let category = category
         .ok_or_else(|| anyhow!("Missing mandatory 'category' entry."))
         .and_then(|category_val| match category_val.as_str() {
             Some("run") => Ok(TestCategory::Runs),
@@ -859,9 +877,27 @@ fn parse_test_toml(path: &Path, run_config: &RunConfig) -> Result<TestDescriptio
             Some(other) => Err(anyhow!("Unknown category '{}'.", other)),
         })?;
 
+    let expected_decoded_test_logs = if let Some(toml::Value::Array(a)) =
+        toml_content.get("expected_decoded_test_logs")
+    {
+        if category != TestCategory::UnitTestsPass {
+            bail!("`expected_decoded_test_logs` is only valid for `unt_tests_pass` type of tests")
+        }
+        a.iter()
+            .map(|elem| elem.as_str().map(|s| s.to_string()))
+            .collect::<Option<Vec<_>>>()
+    } else {
+        None
+    };
+
     // Abort early if we find a FailsToCompile test without any Checker directives.
     if category == TestCategory::FailsToCompile && checker.is_empty() {
         bail!("'fail' tests must contain some FileCheck verification directives.");
+    }
+
+    // To allow different configs, we must ignore file check if it is not fail
+    if category != TestCategory::FailsToCompile {
+        file_check = FileCheck("".into());
     }
 
     let (script_data, script_data_new_encoding) = match &category {
@@ -932,7 +968,7 @@ fn parse_test_toml(path: &Path, run_config: &RunConfig) -> Result<TestDescriptio
 
     let expected_result = match &category {
         TestCategory::Runs | TestCategory::RunsWithContract => {
-            Some(get_expected_result("expected_result", &toml_content)?)
+            get_expected_result("expected_result", &toml_content)
         }
         TestCategory::Compiles
         | TestCategory::FailsToCompile
@@ -944,7 +980,7 @@ fn parse_test_toml(path: &Path, run_config: &RunConfig) -> Result<TestDescriptio
         &category,
         get_expected_result("expected_result_new_encoding", &toml_content),
     ) {
-        (TestCategory::Runs | TestCategory::RunsWithContract, Ok(value)) => Some(value),
+        (TestCategory::Runs | TestCategory::RunsWithContract, Some(value)) => Some(value),
         _ => None,
     };
 
@@ -1025,7 +1061,11 @@ fn parse_test_toml(path: &Path, run_config: &RunConfig) -> Result<TestDescriptio
 
     Ok(TestDescription {
         name,
-        suffix: None,
+        suffix: if run_config.experimental.new_encoding {
+            None
+        } else {
+            Some("encoding v0".into())
+        },
         category,
         script_data,
         script_data_new_encoding,
@@ -1040,6 +1080,7 @@ fn parse_test_toml(path: &Path, run_config: &RunConfig) -> Result<TestDescriptio
         unsupported_profiles,
         checker: file_check,
         run_config: run_config.clone(),
+        expected_decoded_test_logs,
     })
 }
 
@@ -1064,7 +1105,7 @@ fn get_build_profile_from_value(value: &toml::Value) -> Result<&'static str> {
     }
 }
 
-fn get_expected_result(key: &str, toml_content: &toml::Value) -> Result<TestResult> {
+fn get_expected_result(key: &str, toml_content: &toml::Value) -> Option<TestResult> {
     fn get_action_value(action: &toml::Value, expected_value: &toml::Value) -> Result<TestResult> {
         match (action.as_str(), expected_value) {
             // A simple integer value.
@@ -1085,22 +1126,8 @@ fn get_expected_result(key: &str, toml_content: &toml::Value) -> Result<TestResu
         }
     }
 
-    toml_content
-        .get(key)
-        .ok_or_else(|| anyhow!( "Could not find mandatory 'expected_result' entry."))
-        .and_then(|expected_result_table| {
-            expected_result_table
-                .get("action")
-                .ok_or_else(|| {
-                    anyhow!("Could not find mandatory 'action' field in 'expected_result' entry.")
-                })
-                .and_then(|action| {
-                    expected_result_table
-                        .get("value")
-                        .ok_or_else(|| {
-                            anyhow!("Could not find mandatory 'value' field in 'expected_result' entry.")
-                        })
-                        .and_then(|expected_value| get_action_value(action, expected_value))
-                })
-        })
+    let expected_result_table = toml_content.get(key)?;
+    let action = expected_result_table.get("action")?;
+    let value = expected_result_table.get("value")?;
+    get_action_value(action, value).ok()
 }

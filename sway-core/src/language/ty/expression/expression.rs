@@ -173,10 +173,10 @@ impl CollectTypesMetadata for TyExpression {
             StructExpression {
                 fields,
                 instantiation_span,
-                struct_ref,
+                struct_id,
                 ..
             } => {
-                let struct_decl = decl_engine.get_struct(struct_ref);
+                let struct_decl = decl_engine.get_struct(struct_id);
                 for type_parameter in &struct_decl.type_parameters {
                     ctx.call_site_insert(type_parameter.type_id, instantiation_span.clone());
                 }
@@ -306,6 +306,7 @@ impl CollectTypesMetadata for TyExpression {
             // `TyExpression::return_type`. Variable expressions are just names of variables.
             VariableExpression { .. }
             | ConstantExpression { .. }
+            | ConfigurableExpression { .. }
             | StorageAccess { .. }
             | Literal(_)
             | AbiName(_)
@@ -387,13 +388,13 @@ impl TyExpression {
 
         match &self.expression {
             TyExpressionVariant::StructExpression {
-                struct_ref,
+                struct_id,
                 instantiation_span,
                 ..
             } => {
-                let s = engines.de().get(struct_ref.id());
+                let struct_decl = engines.de().get(struct_id);
                 emit_warning_if_deprecated(
-                    &s.attributes,
+                    &struct_decl.attributes,
                     instantiation_span,
                     handler,
                     "deprecated struct",
@@ -405,8 +406,8 @@ impl TyExpression {
             } => {
                 if let Some(TyDecl::ImplTrait(t)) = &engines.de().get(fn_ref).implementing_type {
                     let t = &engines.de().get(&t.decl_id).implementing_for;
-                    if let TypeInfo::Struct(struct_ref) = &*engines.te().get(t.type_id) {
-                        let s = engines.de().get(struct_ref.id());
+                    if let TypeInfo::Struct(struct_id) = &*engines.te().get(t.type_id) {
+                        let s = engines.de().get(struct_id);
                         emit_warning_if_deprecated(
                             &s.attributes,
                             &call_path.span(),

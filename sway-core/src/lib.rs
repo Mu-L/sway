@@ -25,10 +25,10 @@ pub mod type_system;
 use crate::ir_generation::check_function_purity;
 use crate::query_engine::ModuleCacheEntry;
 use crate::source_map::SourceMap;
-pub use asm_generation::from_ir::compile_ir_to_asm;
+pub use asm_generation::from_ir::compile_ir_context_to_finalized_asm;
 use asm_generation::FinalizedAsm;
 pub use asm_generation::{CompiledBytecode, FinalizedEntry};
-pub use build_config::{BuildConfig, BuildTarget, LspConfig, OptLevel};
+pub use build_config::{BuildConfig, BuildTarget, LspConfig, OptLevel, PrintAsm, PrintIr};
 use control_flow_analysis::ControlFlowGraph;
 pub use debug_generation::write_dwarf;
 use indexmap::IndexMap;
@@ -43,9 +43,9 @@ use sway_ast::AttributeDecl;
 use sway_error::handler::{ErrorEmitted, Handler};
 use sway_ir::{
     create_o1_pass_group, register_known_passes, Context, Kind, Module, PassGroup, PassManager,
-    ARGDEMOTION_NAME, CONSTDEMOTION_NAME, DCE_NAME, FUNC_DCE_NAME, INLINE_MODULE_NAME,
-    MEM2REG_NAME, MEMCPYOPT_NAME, MISCDEMOTION_NAME, MODULEPRINTER_NAME, RETDEMOTION_NAME,
-    SIMPLIFYCFG_NAME, SROA_NAME,
+    PrintPassesOpts, ARG_DEMOTION_NAME, CONST_DEMOTION_NAME, DCE_NAME, FN_DCE_NAME,
+    FN_DEDUP_DEBUG_PROFILE_NAME, FN_INLINE_NAME, MEM2REG_NAME, MEMCPYOPT_NAME, MISC_DEMOTION_NAME,
+    RET_DEMOTION_NAME, SIMPLIFY_CFG_NAME, SROA_NAME,
 };
 use sway_types::constants::DOC_COMMENT_ATTRIBUTE_NAME;
 use sway_types::SourceEngine;
@@ -535,23 +535,24 @@ pub fn parsed_to_ast(
     // Build the dependency graph for the submodules.
     build_module_dep_graph(handler, &mut parse_program.root)?;
 
+    let namespace = Namespace::init_root(initial_namespace);
     // Collect the program symbols.
     let _collection_ctx =
-        ty::TyProgram::collect(handler, engines, parse_program, initial_namespace.clone())?;
+        ty::TyProgram::collect(handler, engines, parse_program, namespace.clone())?;
 
     // Type check the program.
     let typed_program_opt = ty::TyProgram::type_check(
         handler,
         engines,
         parse_program,
-        initial_namespace,
+        namespace,
         package_name,
         build_config,
     );
     check_should_abort(handler, retrigger_compilation.clone())?;
 
     // Only clear the parsed AST nodes if we are running a regular compilation pipeline.
-    // LSP needs these to build its token map, and they are cleared by `clear_module` as
+    // LSP needs these to build its token map, and they are cleared by `clear_program` as
     // part of the LSP garbage collection functionality instead.
     if lsp_config.is_none() {
         engines.pe().clear();
@@ -577,7 +578,7 @@ pub fn parsed_to_ast(
         // Collect information about the types used in this program
         let types_metadata_result = typed_program.collect_types_metadata(
             handler,
-            &mut CollectTypesMetadataContext::new(engines, experimental),
+            &mut CollectTypesMetadataContext::new(engines, experimental, package_name.to_string()),
         );
         let types_metadata = match types_metadata_result {
             Ok(types_metadata) => types_metadata,
@@ -705,7 +706,7 @@ pub fn compile_to_ast(
         // Check if we can re-use the data in the cache.
         if is_parse_module_cache_up_to_date(engines, &path, include_tests, build_config) {
             let mut entry = query_engine.get_programs_cache_entry(&path).unwrap();
-            entry.programs.metrics.reused_modules += 1;
+            entry.programs.metrics.reused_programs += 1;
 
             let (warnings, errors) = entry.handler_data;
             let new_handler = Handler::from_parts(warnings, errors);
@@ -880,11 +881,15 @@ pub(crate) fn compile_ast_to_ir_to_asm(
             pass_group.append_group(create_o1_pass_group());
         }
         OptLevel::Opt0 => {
+            // We run a function deduplication pass that only removes duplicate
+            // functions when everything, including the metadata are identical.
+            pass_group.append_pass(FN_DEDUP_DEBUG_PROFILE_NAME);
+
             // Inlining is necessary until #4899 is resolved.
-            pass_group.append_pass(INLINE_MODULE_NAME);
+            pass_group.append_pass(FN_INLINE_NAME);
 
             // Do DCE so other optimizations run faster.
-            pass_group.append_pass(FUNC_DCE_NAME);
+            pass_group.append_pass(FN_DCE_NAME);
             pass_group.append_pass(DCE_NAME);
         }
     }
@@ -895,17 +900,17 @@ pub(crate) fn compile_ast_to_ir_to_asm(
         //
         // Demote large by-value constants, arguments and return values to by-reference values
         // using temporaries.
-        pass_group.append_pass(CONSTDEMOTION_NAME);
-        pass_group.append_pass(ARGDEMOTION_NAME);
-        pass_group.append_pass(RETDEMOTION_NAME);
-        pass_group.append_pass(MISCDEMOTION_NAME);
+        pass_group.append_pass(CONST_DEMOTION_NAME);
+        pass_group.append_pass(ARG_DEMOTION_NAME);
+        pass_group.append_pass(RET_DEMOTION_NAME);
+        pass_group.append_pass(MISC_DEMOTION_NAME);
 
         // Convert loads and stores to mem_copies where possible.
         pass_group.append_pass(MEMCPYOPT_NAME);
 
         // Run a DCE and simplify-cfg to clean up any obsolete instructions.
         pass_group.append_pass(DCE_NAME);
-        pass_group.append_pass(SIMPLIFYCFG_NAME);
+        pass_group.append_pass(SIMPLIFY_CFG_NAME);
 
         match build_config.optimization_level {
             OptLevel::Opt1 => {
@@ -917,24 +922,20 @@ pub(crate) fn compile_ast_to_ir_to_asm(
         }
     }
 
-    if build_config.print_ir {
-        pass_group.append_pass(MODULEPRINTER_NAME);
-    }
-
     // Run the passes.
-    let res = if let Err(ir_error) = pass_mgr.run(&mut ir, &pass_group) {
-        Err(handler.emit_err(CompileError::InternalOwned(
-            ir_error.to_string(),
-            span::Span::dummy(),
-        )))
-    } else {
-        Ok(())
-    };
+    let print_passes_opts: PrintPassesOpts = (&build_config.print_ir).into();
+    let res =
+        if let Err(ir_error) = pass_mgr.run_with_print(&mut ir, &pass_group, &print_passes_opts) {
+            Err(handler.emit_err(CompileError::InternalOwned(
+                ir_error.to_string(),
+                span::Span::dummy(),
+            )))
+        } else {
+            Ok(())
+        };
     res?;
 
-    let final_asm = compile_ir_to_asm(handler, &ir, Some(build_config))?;
-
-    Ok(final_asm)
+    compile_ir_context_to_finalized_asm(handler, &ir, Some(build_config))
 }
 
 /// Given input Sway source code, compile to [CompiledBytecode], containing the asm in bytecode form.
@@ -1008,7 +1009,7 @@ fn dead_code_analysis<'a>(
     program: &ty::TyProgram,
 ) -> Result<ControlFlowGraph<'a>, ErrorEmitted> {
     let decl_engine = engines.de();
-    let mut dead_code_graph = ControlFlowGraph::new(engines.clone());
+    let mut dead_code_graph = ControlFlowGraph::new(engines);
     let tree_type = program.kind.tree_type();
     module_dead_code_analysis(
         handler,

@@ -33,8 +33,6 @@ pub enum TyExpressionVariant {
         type_binding: Option<TypeBinding<()>>,
         /// In case it is a method should contain a TypeId to either an enum, struct or a type alias.
         call_path_typeid: Option<TypeId>,
-        /// This tracks whether monomorphization has been deferred between compiler stages.
-        deferred_monomorphization: bool,
         contract_call_params: IndexMap<String, TyExpression>,
         contract_caller: Option<Box<TyExpression>>,
     },
@@ -45,7 +43,12 @@ pub enum TyExpressionVariant {
     },
     ConstantExpression {
         span: Span,
-        const_decl: Box<TyConstantDecl>,
+        decl: Box<TyConstantDecl>,
+        call_path: Option<CallPath>,
+    },
+    ConfigurableExpression {
+        span: Span,
+        decl: Box<TyConfigurableDecl>,
         call_path: Option<CallPath>,
     },
     VariableExpression {
@@ -66,7 +69,7 @@ pub enum TyExpressionVariant {
         index: Box<TyExpression>,
     },
     StructExpression {
-        struct_ref: DeclRef<DeclId<TyStructDecl>>,
+        struct_id: DeclId<TyStructDecl>,
         fields: Vec<TyStructExpressionField>,
         instantiation_span: Span,
         call_path_binding: TypeBinding<CallPath>,
@@ -213,12 +216,12 @@ impl PartialEqWithEngines for TyExpressionVariant {
                 Self::ConstantExpression {
                     call_path: l_call_path,
                     span: l_span,
-                    const_decl: _,
+                    decl: _,
                 },
                 Self::ConstantExpression {
                     call_path: r_call_path,
                     span: r_span,
-                    const_decl: _,
+                    decl: _,
                 },
             ) => l_call_path == r_call_path && l_span == r_span,
             (
@@ -260,19 +263,21 @@ impl PartialEqWithEngines for TyExpressionVariant {
             ) => (**l_prefix).eq(&**r_prefix, ctx) && (**l_index).eq(&**r_index, ctx),
             (
                 Self::StructExpression {
-                    struct_ref: l_struct_ref,
+                    struct_id: l_struct_id,
                     fields: l_fields,
                     instantiation_span: l_span,
                     call_path_binding: _,
                 },
                 Self::StructExpression {
-                    struct_ref: r_struct_ref,
+                    struct_id: r_struct_id,
                     fields: r_fields,
                     instantiation_span: r_span,
                     call_path_binding: _,
                 },
             ) => {
-                l_struct_ref.eq(r_struct_ref, ctx) && l_fields.eq(r_fields, ctx) && l_span == r_span
+                PartialEqWithEngines::eq(&l_struct_id, &r_struct_id, ctx)
+                    && l_fields.eq(r_fields, ctx)
+                    && l_span == r_span
             }
             (Self::CodeBlock(l0), Self::CodeBlock(r0)) => l0.eq(r0, ctx),
             (
@@ -440,7 +445,6 @@ impl HashWithEngines for TyExpressionVariant {
                 selector: _,
                 type_binding: _,
                 call_path_typeid: _,
-                deferred_monomorphization: _,
                 ..
             } => {
                 call_path.hash(state);
@@ -456,7 +460,14 @@ impl HashWithEngines for TyExpressionVariant {
                 rhs.hash(state, engines);
             }
             Self::ConstantExpression {
-                const_decl,
+                decl: const_decl,
+                span: _,
+                call_path: _,
+            } => {
+                const_decl.hash(state, engines);
+            }
+            Self::ConfigurableExpression {
+                decl: const_decl,
                 span: _,
                 call_path: _,
             } => {
@@ -487,14 +498,14 @@ impl HashWithEngines for TyExpressionVariant {
                 index.hash(state, engines);
             }
             Self::StructExpression {
-                struct_ref,
+                struct_id,
                 fields,
                 // these fields are not hashed because they aren't relevant/a
                 // reliable source of obj v. obj distinction
                 instantiation_span: _,
                 call_path_binding: _,
             } => {
-                struct_ref.hash(state, engines);
+                HashWithEngines::hash(&struct_id, state, engines);
                 fields.hash(state, engines);
             }
             Self::CodeBlock(contents) => {
@@ -655,7 +666,8 @@ impl SubstTypes for TyExpressionVariant {
                 lhs.subst(type_mapping, engines);
                 rhs.subst(type_mapping, engines);
             },
-            ConstantExpression { const_decl, .. } => const_decl.subst(type_mapping, engines),
+            ConstantExpression { decl, .. } => decl.subst(type_mapping, engines),
+            ConfigurableExpression { decl, .. } => decl.subst(type_mapping, engines),
             VariableExpression { .. } => HasChanges::No,
             Tuple { fields } => fields.subst(type_mapping, engines),
             Array {
@@ -670,15 +682,15 @@ impl SubstTypes for TyExpressionVariant {
                 index.subst(type_mapping, engines);
             },
             StructExpression {
-                struct_ref,
+                struct_id,
                 fields,
                 instantiation_span: _,
                 call_path_binding: _,
             } => has_changes! {
-                if let Some(new_struct_ref) = struct_ref
+                if let Some(new_struct_ref) = struct_id
                     .clone()
                     .subst_types_and_insert_new(type_mapping, engines) {
-                    struct_ref.replace_id(*new_struct_ref.id());
+                    struct_id.replace_id(*new_struct_ref.id());
                     HasChanges::Yes
                 } else {
                     HasChanges::No
@@ -843,8 +855,9 @@ impl ReplaceDecls for TyExpressionVariant {
                     has_changes |= (*rhs).replace_decls(decl_mapping, handler, ctx)?;
                     Ok(has_changes)
                 }
-                ConstantExpression { const_decl, .. } => {
-                    const_decl.replace_decls(decl_mapping, handler, ctx)
+                ConstantExpression { decl, .. } => decl.replace_decls(decl_mapping, handler, ctx),
+                ConfigurableExpression { decl, .. } => {
+                    decl.replace_decls(decl_mapping, handler, ctx)
                 }
                 VariableExpression { .. } => Ok(false),
                 Tuple { fields } => {
@@ -879,7 +892,7 @@ impl ReplaceDecls for TyExpressionVariant {
                     Ok(has_changes)
                 }
                 StructExpression {
-                    struct_ref: _,
+                    struct_id: _,
                     fields,
                     instantiation_span: _,
                     call_path_binding: _,
@@ -1004,8 +1017,11 @@ impl TypeCheckAnalysis for TyExpressionVariant {
                 lhs.type_check_analyze(handler, ctx)?;
                 rhs.type_check_analyze(handler, ctx)?
             }
-            TyExpressionVariant::ConstantExpression { const_decl, .. } => {
-                const_decl.type_check_analyze(handler, ctx)?
+            TyExpressionVariant::ConstantExpression { decl, .. } => {
+                decl.type_check_analyze(handler, ctx)?
+            }
+            TyExpressionVariant::ConfigurableExpression { decl, .. } => {
+                decl.type_check_analyze(handler, ctx)?
             }
             TyExpressionVariant::VariableExpression { .. } => {}
             TyExpressionVariant::Tuple { fields } => {
@@ -1104,15 +1120,7 @@ impl TypeCheckFinalization for TyExpressionVariant {
         handler.scope(|handler| {
             match self {
                 TyExpressionVariant::Literal(_) => {}
-                TyExpressionVariant::FunctionApplication {
-                    arguments,
-                    deferred_monomorphization,
-                    ..
-                } => {
-                    // If the function application was deferred we need to monomorphize it here.
-                    // But at the moment monomorphization is fully resolved before type check finalization.
-                    assert!(!(*deferred_monomorphization));
-
+                TyExpressionVariant::FunctionApplication { arguments, .. } => {
                     for (_, arg) in arguments.iter_mut() {
                         let _ = arg.type_check_finalize(handler, ctx);
                     }
@@ -1121,8 +1129,11 @@ impl TypeCheckFinalization for TyExpressionVariant {
                     lhs.type_check_finalize(handler, ctx)?;
                     rhs.type_check_finalize(handler, ctx)?
                 }
-                TyExpressionVariant::ConstantExpression { const_decl, .. } => {
-                    const_decl.type_check_finalize(handler, ctx)?
+                TyExpressionVariant::ConstantExpression { decl, .. } => {
+                    decl.type_check_finalize(handler, ctx)?
+                }
+                TyExpressionVariant::ConfigurableExpression { decl, .. } => {
+                    decl.type_check_finalize(handler, ctx)?
                 }
                 TyExpressionVariant::VariableExpression { .. } => {}
                 TyExpressionVariant::Tuple { fields } => {
@@ -1234,14 +1245,15 @@ impl UpdateConstantExpression for TyExpressionVariant {
                 (*lhs).update_constant_expression(engines, implementing_type);
                 (*rhs).update_constant_expression(engines, implementing_type);
             }
-            ConstantExpression {
-                ref mut const_decl, ..
-            } => {
+            ConstantExpression { ref mut decl, .. } => {
                 if let Some(impl_const) =
-                    find_const_decl_from_impl(implementing_type, engines.de(), const_decl)
+                    find_const_decl_from_impl(implementing_type, engines.de(), decl)
                 {
-                    *const_decl = Box::new(impl_const);
+                    *decl = Box::new(impl_const);
                 }
+            }
+            ConfigurableExpression { .. } => {
+                unreachable!()
             }
             VariableExpression { .. } => (),
             Tuple { fields } => fields
@@ -1391,8 +1403,9 @@ impl DebugWithEngines for TyExpressionVariant {
             }
             TyExpressionVariant::Array { .. } => "array".into(),
             TyExpressionVariant::ArrayIndex { .. } => "[..]".into(),
-            TyExpressionVariant::StructExpression { struct_ref, .. } => {
-                format!("\"{}\" struct init", struct_ref.name().as_str())
+            TyExpressionVariant::StructExpression { struct_id, .. } => {
+                let decl = engines.de().get(struct_id);
+                format!("\"{}\" struct init", decl.name().as_str())
             }
             TyExpressionVariant::CodeBlock(_) => "code block entry".into(),
             TyExpressionVariant::FunctionParameter => "fn param access".into(),
@@ -1425,8 +1438,11 @@ impl DebugWithEngines for TyExpressionVariant {
                     elem_to_access_num
                 )
             }
-            TyExpressionVariant::ConstantExpression { const_decl, .. } => {
-                format!("\"{}\" constant exp", const_decl.name().as_str())
+            TyExpressionVariant::ConstantExpression { decl, .. } => {
+                format!("\"{}\" constant exp", decl.name().as_str())
+            }
+            TyExpressionVariant::ConfigurableExpression { decl, .. } => {
+                format!("\"{}\" configurable exp", decl.name().as_str())
             }
             TyExpressionVariant::VariableExpression { name, .. } => {
                 format!("\"{}\" variable exp", name.as_str())

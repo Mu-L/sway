@@ -7,8 +7,6 @@ use fuels::{
     types::{input::Input as SdkInput, Bits256},
 };
 
-use std::str::FromStr;
-
 const MESSAGE_DATA: [u8; 3] = [1u8, 2u8, 3u8];
 
 abigen!(
@@ -93,7 +91,7 @@ async fn generate_predicate_inputs(
         .unwrap()
         .with_provider(provider.clone());
 
-    let predicate_code = predicate.code().clone();
+    let predicate_code = predicate.code().to_vec();
 
     let predicate_root = predicate.address();
 
@@ -112,7 +110,7 @@ async fn generate_predicate_inputs(
         .unwrap();
 
     let predicate_input = predicate
-        .get_asset_inputs_for_amount(AssetId::default(), amount)
+        .get_asset_inputs_for_amount(AssetId::default(), amount, None)
         .await
         .unwrap()
         .first()
@@ -744,7 +742,7 @@ mod inputs {
                     .take_receipts_checked(None)
                     .unwrap();
 
-                assert_eq!(receipts[1].data(), Some(&[0, 3][..]));
+                assert_eq!(receipts[1].data(), Some(&[0, 0, 0, 0, 0, 0, 0, 3][..]));
             }
 
             #[tokio::test]
@@ -779,7 +777,7 @@ mod inputs {
                     .take_receipts_checked(None)
                     .unwrap();
 
-                let len = predicate_bytecode.len() as u16;
+                let len = predicate_bytecode.len() as u64;
                 assert_eq!(receipts[1].data(), Some(len.to_be_bytes().as_slice()));
             }
 
@@ -814,7 +812,7 @@ mod inputs {
                     .take_receipts_checked(None)
                     .unwrap();
 
-                assert_eq!(receipts[1].data(), Some(0u16.to_le_bytes().as_slice()));
+                assert_eq!(receipts[1].data(), Some(0u64.to_le_bytes().as_slice()));
             }
 
             #[tokio::test]

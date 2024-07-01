@@ -1,7 +1,10 @@
-use sway_core::language::ty::TyDecl;
+use sway_core::{language::ty::TyDecl, TypeInfo};
 
-pub trait DocBlockTitle {
-    fn as_block_title(&self) -> BlockTitle;
+pub trait DocBlock {
+    /// Returns the title of the block that the user will see.
+    fn title(&self) -> BlockTitle;
+    /// Returns the name of the block that will be used in the html and css.
+    fn name(&self) -> &str;
 }
 /// Represents all of the possible titles
 /// belonging to an index or sidebar.
@@ -18,7 +21,11 @@ pub enum BlockTitle {
     Fields,
     Variants,
     RequiredMethods,
+    ImplMethods,
+    ImplTraits,
+    Primitives,
 }
+
 impl BlockTitle {
     pub fn as_str(&self) -> &str {
         match self {
@@ -33,6 +40,9 @@ impl BlockTitle {
             Self::Fields => "Fields",
             Self::Variants => "Variants",
             Self::RequiredMethods => "Required Methods",
+            Self::ImplMethods => "Methods",
+            Self::ImplTraits => "Trait Implementations",
+            Self::Primitives => "Primitives",
         }
     }
     pub fn item_title_str(&self) -> &str {
@@ -48,6 +58,9 @@ impl BlockTitle {
             Self::Fields => "Fields",
             Self::Variants => "Variants",
             Self::RequiredMethods => "Required Methods",
+            Self::ImplMethods => "Methods",
+            Self::ImplTraits => "Trait Implementations",
+            Self::Primitives => "Primitive",
         }
     }
     pub fn class_title_str(&self) -> &str {
@@ -60,7 +73,11 @@ impl BlockTitle {
             Self::ContractStorage => "storage",
             Self::Constants => "constant",
             Self::Functions => "fn",
-            _ => unimplemented!("These titles are unimplemented, and should not be used this way."),
+            Self::Primitives => "primitive",
+            _ => unimplemented!(
+                "BlockTitle {:?} is unimplemented, and should not be used this way.",
+                self
+            ),
         }
     }
     pub fn html_title_string(&self) -> String {
@@ -76,8 +93,8 @@ impl BlockTitle {
     }
 }
 
-impl DocBlockTitle for TyDecl {
-    fn as_block_title(&self) -> BlockTitle {
+impl DocBlock for TyDecl {
+    fn title(&self) -> BlockTitle {
         match self {
             TyDecl::StructDecl { .. } => BlockTitle::Structs,
             TyDecl::EnumDecl { .. } => BlockTitle::Enums,
@@ -87,7 +104,64 @@ impl DocBlockTitle for TyDecl {
             TyDecl::ConstantDecl { .. } => BlockTitle::Constants,
             TyDecl::FunctionDecl { .. } => BlockTitle::Functions,
             _ => {
-                unreachable!("All other TyDecls are non-documentable and will never be matched on")
+                unreachable!(
+                    "TyDecls {:?} is non-documentable and should never be matched on.",
+                    self
+                )
+            }
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            TyDecl::StructDecl(_) => "struct",
+            TyDecl::EnumDecl(_) => "enum",
+            TyDecl::TraitDecl(_) => "trait",
+            TyDecl::AbiDecl(_) => "abi",
+            TyDecl::StorageDecl(_) => "contract_storage",
+            TyDecl::ImplTrait(_) => "impl_trait",
+            TyDecl::FunctionDecl(_) => "fn",
+            TyDecl::ConstantDecl(_) => "constant",
+            TyDecl::TypeAliasDecl(_) => "type_alias",
+            _ => {
+                unreachable!(
+                    "TyDecl {:?} is non-documentable and should never be matched on.",
+                    self
+                )
+            }
+        }
+    }
+}
+
+impl DocBlock for TypeInfo {
+    fn title(&self) -> BlockTitle {
+        match self {
+            sway_core::TypeInfo::StringSlice
+            | sway_core::TypeInfo::StringArray(_)
+            | sway_core::TypeInfo::Boolean
+            | sway_core::TypeInfo::B256
+            | sway_core::TypeInfo::UnsignedInteger(_) => BlockTitle::Primitives,
+            _ => {
+                unimplemented!(
+                    "TypeInfo {:?} is non-documentable and should never be matched on.",
+                    self
+                )
+            }
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            sway_core::TypeInfo::StringSlice
+            | sway_core::TypeInfo::StringArray(_)
+            | sway_core::TypeInfo::Boolean
+            | sway_core::TypeInfo::B256
+            | sway_core::TypeInfo::UnsignedInteger(_) => "primitive",
+            _ => {
+                unimplemented!(
+                    "TypeInfo {:?} is non-documentable and should never be matched on.",
+                    self
+                )
             }
         }
     }

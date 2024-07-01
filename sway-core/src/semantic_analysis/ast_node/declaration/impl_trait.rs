@@ -305,17 +305,14 @@ impl TyImplTrait {
                 let self_type_id = self_type_param.type_id;
 
                 // create the trait name
-                let trait_name = CallPath {
-                    prefixes: vec![],
-                    suffix: match &&*type_engine.get(implementing_for.type_id) {
-                        TypeInfo::Custom {
-                            qualified_call_path: call_path,
-                            ..
-                        } => call_path.call_path.suffix.clone(),
-                        _ => Ident::new_with_override("r#Self".into(), implementing_for.span()),
-                    },
-                    is_absolute: false,
+                let suffix = match &&*type_engine.get(implementing_for.type_id) {
+                    TypeInfo::Custom {
+                        qualified_call_path: call_path,
+                        ..
+                    } => call_path.call_path.suffix.clone(),
+                    _ => Ident::new_with_override("r#Self".into(), implementing_for.span()),
                 };
+                let trait_name = CallPath::ident_to_fullpath(suffix, ctx.namespace());
 
                 // Type check the type parameters.
                 let new_impl_type_parameters = TypeParameter::type_check_type_params(
@@ -462,11 +459,6 @@ impl TyImplTrait {
                         IsExtendingExistingImpl::No,
                     )?;
 
-                    // Now lets do a partial type check of the body of the functions (while deferring full
-                    // monomorphization of function applications). We will use this tree to perform type check
-                    // analysis (mainly dependency analysis), and re-type check the items ordered by dependency.
-                    let mut defer_ctx = ctx.by_ref().with_defer_monomorphization();
-
                     let new_items = &impl_trait.items;
                     for (item, new_item) in items.clone().into_iter().zip(new_items) {
                         match (item, new_item) {
@@ -476,7 +468,7 @@ impl TyImplTrait {
                                     (*decl_engine.get_function(decl_ref.id())).clone();
                                 let new_ty_fn_decl = match ty::TyFunctionDecl::type_check_body(
                                     handler,
-                                    defer_ctx.by_ref(),
+                                    ctx.by_ref(),
                                     &fn_decl,
                                     &mut ty_fn_decl,
                                 ) {

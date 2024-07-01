@@ -19,7 +19,10 @@ use ::convert::From;
 use ::u128::*;
 
 // Primitive conversions
-use ::primitive_conversions::*;
+use ::primitive_conversions::{b256::*, str::*, u16::*, u256::*, u32::*, u64::*, u8::*,};
 
 // Logging
 use ::logging::log;
+
+// Math
+use ::math::*;

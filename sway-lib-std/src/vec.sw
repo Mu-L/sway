@@ -419,7 +419,7 @@ impl<T> Vec<T> {
         // Shift everything down to fill in that spot.
         let mut i = index;
         if self.len > 1 {
-            while i < self.len {
+            while i < self.len - 1 {
                 let ptr = buf_start.add::<T>(i);
                 ptr.add::<T>(1).copy_to::<T>(ptr, 1);
                 i += 1;
@@ -651,16 +651,18 @@ impl<T> AbiEncode for Vec<T>
 where
     T: AbiEncode,
 {
-    fn abi_encode(self, ref mut buffer: Buffer) {
+    fn abi_encode(self, buffer: Buffer) -> Buffer {
         let len = self.len();
-        buffer.push_u64(len);
+        let mut buffer = len.abi_encode(buffer);
 
         let mut i = 0;
         while i < len {
             let item = self.get(i).unwrap();
-            item.abi_encode(buffer);
+            buffer = item.abi_encode(buffer);
             i += 1;
         }
+
+        buffer
     }
 }
 
@@ -699,30 +701,4 @@ impl<T> Iterator for VecIter<T> {
         self.index += 1;
         self.values.get(self.index - 1)
     }
-}
-
-#[test()]
-fn test_vec_with_len_1() {
-    let mut ve: Vec<u64> = Vec::new();
-    assert(ve.len == 0);
-    ve.push(1);
-    assert(ve.len == 1);
-    let _ = ve.remove(0);
-    assert(ve.len == 0);
-}
-
-#[test()]
-fn encode_and_decode_vec() {
-    let mut v1: Vec<u64> = Vec::new();
-    v1.push(1);
-    v1.push(2);
-    v1.push(3);
-
-    let v2 = abi_decode::<Vec<u64>>(encode(v1));
-
-    assert(v2.len() == 3);
-    assert(v2.capacity() == 3);
-    assert(v2.get(0) == Some(1));
-    assert(v2.get(1) == Some(2));
-    assert(v2.get(2) == Some(3));
 }

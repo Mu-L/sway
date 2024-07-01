@@ -49,6 +49,7 @@ use sway_core::{
     transform::AttributeKind,
     write_dwarf, BuildTarget, Engines, FinalizedEntry, LspConfig,
 };
+use sway_core::{PrintAsm, PrintIr};
 use sway_error::{error::CompileError, handler::Handler, warning::CompileWarning};
 use sway_types::constants::{CORE, PRELUDE, STD};
 use sway_types::{Ident, Span, Spanned};
@@ -257,19 +258,12 @@ pub struct PrintOpts {
     /// Variables {path}, {line} {col} can be used in the provided format.
     /// An example for vscode would be: "vscode://file/{path}:{line}:{col}"
     pub dca_graph_url_format: Option<String>,
-    /// Print the finalized ASM.
-    ///
-    /// This is the state of the ASM with registers allocated and optimisations applied.
-    pub finalized_asm: bool,
     /// Print the generated ASM.
-    ///
-    /// This is the state of the ASM prior to performing register allocation and other ASM
-    /// optimisations.
-    pub intermediate_asm: bool,
+    pub asm: PrintAsm,
     /// Print the bytecode. This is the final output of the compiler.
     pub bytecode: bool,
     /// Print the generated Sway IR (Intermediate Representation).
-    pub ir: bool,
+    pub ir: PrintIr,
     /// Output build errors and warnings in reverse order.
     pub reverse_order: bool,
 }
@@ -503,7 +497,7 @@ impl BuiltPackage {
         let json_abi_path = output_dir.join(program_abi_stem).with_extension("json");
         self.write_json_abi(&json_abi_path, minify)?;
 
-        debug!("      Bytecode size: {} bytes", self.bytecode.bytes.len());
+        info!("      Bytecode size: {} bytes", self.bytecode.bytes.len());
         // Additional ops required depending on the program type
         match self.tree_type {
             TreeType::Contract => {
@@ -1450,7 +1444,7 @@ fn fetch_deps(
             (
                 n.clone(),
                 d.dependency.clone(),
-                DepKind::Contract { salt: d.salt },
+                DepKind::Contract { salt: d.salt.0 },
             )
         })
         .chain(
@@ -1554,10 +1548,9 @@ pub fn sway_build_config(
     )
     .with_print_dca_graph(build_profile.print_dca_graph.clone())
     .with_print_dca_graph_url_format(build_profile.print_dca_graph_url_format.clone())
-    .with_print_finalized_asm(build_profile.print_finalized_asm)
-    .with_print_intermediate_asm(build_profile.print_intermediate_asm)
+    .with_print_asm(build_profile.print_asm)
     .with_print_bytecode(build_profile.print_bytecode)
-    .with_print_ir(build_profile.print_ir)
+    .with_print_ir(build_profile.print_ir.clone())
     .with_include_tests(build_profile.include_tests)
     .with_time_phases(build_profile.time_phases)
     .with_metrics(build_profile.metrics_outfile.clone())
@@ -1602,8 +1595,7 @@ pub fn dependency_namespace(
     };
 
     root_module.write(engines, |root_module| {
-        root_module.is_external = true;
-        root_module.name = name.clone();
+        root_module.name.clone_from(&name);
         root_module.visibility = Visibility::Public;
     });
 
@@ -1613,7 +1605,7 @@ pub fn dependency_namespace(
         let dep_node = edge.target();
         let dep_name = kebab_to_snake_case(&edge.weight().name);
         let dep_edge = edge.weight();
-        let dep_namespace = match dep_edge.kind {
+        let mut dep_namespace = match dep_edge.kind {
             DepKind::Library => lib_namespace_map
                 .get(&dep_node)
                 .cloned()
@@ -1635,12 +1627,12 @@ pub fn dependency_namespace(
                     contract_id_value,
                     experimental,
                 )?;
-                module.is_external = true;
                 module.name = name;
                 module.visibility = Visibility::Public;
                 module
             }
         };
+        dep_namespace.is_external = true;
         root_module.insert_submodule(dep_name, dep_namespace);
         let dep = &graph[dep_node];
         if dep.name == CORE {
@@ -1653,17 +1645,20 @@ pub fn dependency_namespace(
         if let Some(core_node) = find_core_dep(graph, node) {
             let core_namespace = &lib_namespace_map[&core_node];
             root_module.insert_submodule(CORE.to_string(), core_namespace.clone());
+            core_added = true;
         }
     }
 
     let mut root = namespace::Root::from(root_module);
 
-    let _ = root.star_import_with_reexports(
-        &Handler::default(),
-        engines,
-        &[CORE, PRELUDE].map(|s| Ident::new_no_span(s.into())),
-        &[],
-    );
+    if core_added {
+        let _ = root.star_import_with_reexports(
+            &Handler::default(),
+            engines,
+            &[CORE, PRELUDE].map(|s| Ident::new_no_span(s.into())),
+            &[],
+        );
+    }
 
     if has_std_dep(graph, node) {
         let _ = root.star_import_with_reexports(
@@ -1912,9 +1907,13 @@ pub fn compile(
     if let ProgramABI::Fuel(ref mut program_abi) = program_abi {
         if let Some(ref mut configurables) = program_abi.configurables {
             // Filter out all dead configurables (i.e. ones without offsets in the bytecode)
-            configurables.retain(|c| compiled.config_const_offsets.contains_key(&c.name));
+            configurables.retain(|c| {
+                compiled
+                    .named_data_section_entries_offsets
+                    .contains_key(&c.name)
+            });
             // Set the actual offsets in the JSON object
-            for (config, offset) in compiled.config_const_offsets {
+            for (config, offset) in compiled.named_data_section_entries_offsets {
                 if let Some(idx) = configurables.iter().position(|c| c.name == config) {
                     configurables[idx].offset = offset;
                 }
@@ -2070,19 +2069,20 @@ fn build_profile_from_opts(
     profile.name = selected_profile_name.into();
     profile.print_ast |= print.ast;
     if profile.print_dca_graph.is_none() {
-        profile.print_dca_graph = print.dca_graph.clone();
+        profile.print_dca_graph.clone_from(&print.dca_graph);
     }
     if profile.print_dca_graph_url_format.is_none() {
-        profile.print_dca_graph_url_format = print.dca_graph_url_format.clone();
+        profile
+            .print_dca_graph_url_format
+            .clone_from(&print.dca_graph_url_format);
     }
-    profile.print_ir |= print.ir;
-    profile.print_finalized_asm |= print.finalized_asm;
+    profile.print_ir |= print.ir.clone();
+    profile.print_asm |= print.asm;
     profile.print_bytecode |= print.bytecode;
-    profile.print_intermediate_asm |= print.intermediate_asm;
     profile.terse |= pkg.terse;
     profile.time_phases |= time_phases;
     if profile.metrics_outfile.is_none() {
-        profile.metrics_outfile = metrics_outfile.clone();
+        profile.metrics_outfile.clone_from(metrics_outfile);
     }
     profile.include_tests |= tests;
     profile.json_abi_with_callpaths |= pkg.json_abi_with_callpaths;
@@ -2236,7 +2236,7 @@ pub fn contract_id(
     contract.id(salt, &contract.root(), &state_root)
 }
 
-/// Checks if there are conficting `Salt` declarations for the contract dependencies in the graph.
+/// Checks if there are conflicting `Salt` declarations for the contract dependencies in the graph.
 fn validate_contract_deps(graph: &Graph) -> Result<()> {
     // For each contract dependency node in the graph, check if there are conflicting salt
     // declarations.
@@ -2699,7 +2699,7 @@ pub fn check(
                 let mut module = typed_program
                     .root
                     .namespace
-                    .module_id(engines)
+                    .program_id(engines)
                     .read(engines, |m| m.clone());
                 module.name = Some(Ident::new_no_span(pkg.name.clone()));
                 module.span = Some(

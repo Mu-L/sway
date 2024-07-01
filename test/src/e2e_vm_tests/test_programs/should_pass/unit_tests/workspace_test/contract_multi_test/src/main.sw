@@ -17,16 +17,14 @@ fn test_foo() {
 
 #[test(should_revert)]
 fn test_fail() {
-    let contract_id = 0x22f840cd4af724e7257dd01ce315d907d694e417778b5f16b205a918baee092e;
-    let caller = abi(MyContract, contract_id);
+    let caller = abi(MyContract, CONTRACT_ID);
     let result = caller.test_function {}();
     assert(result == false)
 }
 
 #[test]
 fn test_success() {
-    let contract_id = 0x22f840cd4af724e7257dd01ce315d907d694e417778b5f16b205a918baee092e;
-    let caller = abi(MyContract, contract_id);
+    let caller = abi(MyContract, CONTRACT_ID);
     let result = caller.test_function {}();
     assert(result == true)
 }

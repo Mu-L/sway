@@ -307,6 +307,10 @@ impl Dependencies {
                 let decl = engines.pe().get_constant(decl_id);
                 self.gather_from_constant_decl(engines, &decl)
             }
+            Declaration::ConfigurableDeclaration(decl_id) => {
+                let decl = engines.pe().get_configurable(decl_id);
+                self.gather_from_configurable_decl(engines, &decl)
+            }
             Declaration::TraitTypeDeclaration(decl_id) => {
                 let decl = engines.pe().get_trait_type(decl_id);
                 self.gather_from_type_decl(engines, &decl)
@@ -337,6 +341,7 @@ impl Dependencies {
                 })
                 .gather_from_type_parameters(type_parameters)
             }
+            Declaration::EnumVariantDeclaration(_decl) => unreachable!(),
             Declaration::TraitDeclaration(decl_id) => {
                 let trait_decl = engines.pe().get_trait(decl_id);
                 self.gather_from_iter(trait_decl.supertraits.iter(), |deps, sup| {
@@ -454,20 +459,26 @@ impl Dependencies {
                 })
             }
             Declaration::StorageDeclaration(decl_id) => {
-                let StorageDeclaration { fields, .. } = &*engines.pe().get_storage(decl_id);
-                self.gather_from_iter(
-                    fields.iter(),
-                    |deps,
-                     StorageField {
-                         ref type_argument, ..
-                     }| {
-                        deps.gather_from_type_argument(engines, type_argument)
-                    },
-                )
+                let StorageDeclaration { entries, .. } = &*engines.pe().get_storage(decl_id);
+                self.gather_from_iter(entries.iter(), |deps, entry| {
+                    deps.gather_from_storage_entry(engines, entry)
+                })
             }
             Declaration::TypeAliasDeclaration(decl_id) => {
                 let TypeAliasDeclaration { ty, .. } = &*engines.pe().get_type_alias(decl_id);
                 self.gather_from_type_argument(engines, ty)
+            }
+        }
+    }
+
+    fn gather_from_storage_entry(self, engines: &Engines, entry: &StorageEntry) -> Self {
+        match entry {
+            StorageEntry::Namespace(namespace) => self
+                .gather_from_iter(namespace.entries.iter(), |deps, entry| {
+                    deps.gather_from_storage_entry(engines, entry)
+                }),
+            StorageEntry::Field(field) => {
+                self.gather_from_type_argument(engines, &field.type_argument)
             }
         }
     }
@@ -478,6 +489,24 @@ impl Dependencies {
         const_decl: &ConstantDeclaration,
     ) -> Self {
         let ConstantDeclaration {
+            type_ascription,
+            value,
+            ..
+        } = const_decl;
+        match value {
+            Some(value) => self
+                .gather_from_type_argument(engines, type_ascription)
+                .gather_from_expr(engines, value),
+            None => self,
+        }
+    }
+
+    fn gather_from_configurable_decl(
+        self,
+        engines: &Engines,
+        const_decl: &ConfigurableDeclaration,
+    ) -> Self {
+        let ConfigurableDeclaration {
             type_ascription,
             value,
             ..
@@ -879,6 +908,10 @@ fn decl_name(engines: &Engines, decl: &Declaration) -> Option<DependentSymbol> {
             let decl = engines.pe().get_constant(decl_id);
             dep_sym(decl.name.clone())
         }
+        Declaration::ConfigurableDeclaration(decl_id) => {
+            let decl = engines.pe().get_configurable(decl_id);
+            dep_sym(decl.name.clone())
+        }
         Declaration::TraitTypeDeclaration(decl_id) => {
             let decl = engines.pe().get_trait_type(decl_id);
             dep_sym(decl.name.clone())
@@ -891,6 +924,7 @@ fn decl_name(engines: &Engines, decl: &Declaration) -> Option<DependentSymbol> {
             let decl = engines.pe().get_enum(decl_id);
             dep_sym(decl.name.clone())
         }
+        Declaration::EnumVariantDeclaration(_decl) => None,
         Declaration::TraitDeclaration(decl_id) => {
             let decl = engines.pe().get_trait(decl_id);
             dep_sym(decl.name.clone())

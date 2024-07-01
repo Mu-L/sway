@@ -132,6 +132,7 @@ pub async fn handle_hover(
                 &state.keyword_docs,
                 &uri,
                 position,
+                state.config.read().client.clone(),
             ))
         }
         Err(err) => {
@@ -502,7 +503,7 @@ pub(crate) async fn metrics(
                     .engines
                     .read()
                     .se()
-                    .get_path_from_module_id(kv.key())
+                    .get_manifest_path_from_program_id(kv.key())
                     .unwrap()
                     .to_string_lossy()
                     .to_string();

@@ -128,7 +128,6 @@ impl ty::TyExpression {
                 selector: None,
                 type_binding: None,
                 call_path_typeid: None,
-                deferred_monomorphization: false,
                 contract_call_params: IndexMap::new(),
                 contract_caller: None,
             },
@@ -332,6 +331,7 @@ impl ty::TyExpression {
                 Self::type_check_array_index(handler, ctx, prefix, index, span)
             }
             ExpressionKind::StorageAccess(StorageAccessExpression {
+                namespace_names,
                 field_names,
                 storage_keyword_span,
             }) => {
@@ -342,6 +342,7 @@ impl ty::TyExpression {
                 Self::type_check_storage_access(
                     handler,
                     ctx,
+                    namespace_names,
                     field_names,
                     storage_keyword_span.clone(),
                     &span,
@@ -527,7 +528,23 @@ impl ty::TyExpression {
                 ty::TyExpression {
                     return_type: const_decl.return_type,
                     expression: ty::TyExpressionVariant::ConstantExpression {
-                        const_decl: Box::new(const_decl),
+                        decl: Box::new(const_decl),
+                        span: name.span(),
+                        call_path: Some(
+                            CallPath::from(decl_name).to_fullpath(ctx.engines(), ctx.namespace()),
+                        ),
+                    },
+                    span,
+                }
+            }
+            Some(ty::TyDecl::ConfigurableDecl(ty::ConfigurableDecl { decl_id, .. })) => {
+                let decl = (*decl_engine.get_configurable(&decl_id)).clone();
+                let decl_name = decl.name().clone();
+
+                ty::TyExpression {
+                    return_type: decl.return_type,
+                    expression: ty::TyExpressionVariant::ConfigurableExpression {
+                        decl: Box::new(decl),
                         span: name.span(),
                         call_path: Some(
                             CallPath::from(decl_name).to_fullpath(ctx.engines(), ctx.namespace()),
@@ -1035,6 +1052,7 @@ impl ty::TyExpression {
     fn type_check_storage_access(
         handler: &Handler,
         ctx: TypeCheckContext,
+        namespace_names: &[Ident],
         checkee: &[Ident],
         storage_keyword_span: Span,
         span: &Span,
@@ -1045,24 +1063,25 @@ impl ty::TyExpression {
 
         if !ctx
             .namespace()
-            .module_id(engines)
+            .program_id(engines)
             .read(engines, |m| m.current_items().has_storage_declared())
         {
             return Err(handler.emit_err(CompileError::NoDeclaredStorage { span: span.clone() }));
         }
 
-        let storage_fields = ctx.namespace().module_id(engines).read(engines, |m| {
+        let storage_fields = ctx.namespace().program_id(engines).read(engines, |m| {
             m.current_items()
                 .get_storage_field_descriptors(handler, decl_engine)
         })?;
 
         // Do all namespace checking here!
         let (storage_access, mut access_type) =
-            ctx.namespace().module_id(engines).read(engines, |m| {
+            ctx.namespace().program_id(engines).read(engines, |m| {
                 m.current_items().apply_storage_load(
                     handler,
                     ctx.engines,
                     ctx.namespace(),
+                    namespace_names,
                     checkee,
                     &storage_fields,
                     storage_keyword_span.clone(),
@@ -1088,7 +1107,7 @@ impl ty::TyExpression {
                 None,
             )?
             .expect_typed();
-        let storage_key_struct_decl_ref = storage_key_decl_opt.to_struct_ref(handler, engines)?;
+        let storage_key_struct_decl_ref = storage_key_decl_opt.to_struct_id(handler, engines)?;
         let mut storage_key_struct_decl =
             (*decl_engine.get_struct(&storage_key_struct_decl_ref)).clone();
 
@@ -1116,7 +1135,7 @@ impl ty::TyExpression {
         let storage_key_struct_decl_ref = ctx.engines().de().insert(storage_key_struct_decl);
         access_type = type_engine.insert(
             engines,
-            TypeInfo::Struct(storage_key_struct_decl_ref.clone()),
+            TypeInfo::Struct(*storage_key_struct_decl_ref.id()),
             storage_key_struct_decl_ref.span().source_id(),
         );
 
@@ -1286,7 +1305,7 @@ impl ty::TyExpression {
         let not_module = {
             let h = Handler::default();
             ctx.namespace()
-                .module_id(engines)
+                .program_id(engines)
                 .read(engines, |m| m.lookup_submodule(&h, engines, &path).is_err())
         };
 
@@ -1305,7 +1324,7 @@ impl ty::TyExpression {
                     &probe_call_path,
                     ctx.self_type(),
                 )
-                .and_then(|decl| decl.to_enum_ref(&Handler::default(), ctx.engines()))
+                .and_then(|decl| decl.to_enum_id(&Handler::default(), ctx.engines()))
                 .map(|decl_ref| decl_engine.get_enum(&decl_ref))
                 .and_then(|decl| {
                     decl.expect_variant_from_name(&Handler::default(), &suffix)
@@ -1406,7 +1425,7 @@ impl ty::TyExpression {
             is_module = {
                 let call_path_binding = unknown_call_path_binding.clone();
                 ctx.namespace()
-                    .module_id(ctx.engines())
+                    .program_id(ctx.engines())
                     .read(ctx.engines(), |m| {
                         m.lookup_submodule(
                             &module_probe_handler,
@@ -2134,7 +2153,17 @@ impl ty::TyExpression {
                                     return Err(handler.emit_err(
                                         CompileError::AssignmentToConstantOrConfigurable {
                                             decl_name: constant_decl.name().clone(),
-                                            is_configurable: constant_decl.is_configurable,
+                                            is_configurable: false,
+                                            lhs_span,
+                                        },
+                                    ));
+                                }
+                                TyDecl::ConfigurableDecl(decl) => {
+                                    let decl = engines.de().get_configurable(&decl.decl_id);
+                                    return Err(handler.emit_err(
+                                        CompileError::AssignmentToConstantOrConfigurable {
+                                            decl_name: decl.name().clone(),
+                                            is_configurable: true,
                                             lhs_span,
                                         },
                                     ));
@@ -2201,7 +2230,7 @@ impl ty::TyExpression {
 
                 let indices = indices.into_iter().rev().collect::<Vec<_>>();
                 let (ty_of_field, _ty_of_parent) =
-                    ctx.namespace().module_id(engines).read(engines, |m| {
+                    ctx.namespace().program_id(engines).read(engines, |m| {
                         m.current_items().find_subfield_type(
                             handler,
                             ctx.engines(),

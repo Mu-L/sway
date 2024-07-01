@@ -5,10 +5,7 @@ use fuels::{
     accounts::wallet::{Wallet, WalletUnlocked},
     core::codec::{ABIEncoder, EncoderConfig},
     prelude::*,
-    types::{
-        input::Input, transaction_builders::ScriptTransactionBuilder,
-        unresolved_bytes::UnresolvedBytes, Token,
-    },
+    types::{input::Input, transaction_builders::ScriptTransactionBuilder, Token},
 };
 use std::str::FromStr;
 
@@ -35,7 +32,11 @@ async fn create_predicate(
     asset_id: AssetId,
 ) {
     let wallet_coins = wallet
-        .get_asset_inputs_for_amount(asset_id, wallet.get_asset_balance(&asset_id).await.unwrap())
+        .get_asset_inputs_for_amount(
+            asset_id,
+            wallet.get_asset_balance(&asset_id).await.unwrap(),
+            None,
+        )
         .await
         .unwrap();
 
@@ -61,7 +62,7 @@ async fn submit_to_predicate(
     amount_to_predicate: u64,
     asset_id: AssetId,
     receiver_address: Address,
-    predicate_data: UnresolvedBytes,
+    predicate_data: Vec<u8>,
 ) {
     let filter = ResourceFilter {
         from: predicate_address.into(),
@@ -114,7 +115,7 @@ struct Validation {
     total_complete: u64,
 }
 
-fn encode_struct(predicate_struct: Validation) -> UnresolvedBytes {
+fn encode_struct(predicate_struct: Validation) -> Vec<u8> {
     let has_account = Token::Bool(predicate_struct.has_account);
     let total_complete = Token::U64(predicate_struct.total_complete);
     let token_struct: Vec<Token> = vec![has_account, total_complete];

@@ -21,25 +21,14 @@ use crate::{
     AnalysisResults, BlockArgument, Instruction, Module, Pass, PassMutability, ScopedPass,
 };
 
-pub const INLINE_MAIN_NAME: &str = "inline_main";
+pub const FN_INLINE_NAME: &str = "inline";
 
-pub fn create_inline_in_main_pass() -> Pass {
+pub fn create_fn_inline_pass() -> Pass {
     Pass {
-        name: INLINE_MAIN_NAME,
-        descr: "inline from main fn.",
+        name: FN_INLINE_NAME,
+        descr: "Function inlining",
         deps: vec![],
-        runner: ScopedPass::ModulePass(PassMutability::Transform(inline_in_main)),
-    }
-}
-
-pub const INLINE_MODULE_NAME: &str = "inline_module";
-
-pub fn create_inline_in_module_pass() -> Pass {
-    Pass {
-        name: INLINE_MODULE_NAME,
-        descr: "inline function calls in a module.",
-        deps: vec![],
-        runner: ScopedPass::ModulePass(PassMutability::Transform(inline_in_module)),
+        runner: ScopedPass::ModulePass(PassMutability::Transform(fn_inline)),
     }
 }
 
@@ -83,7 +72,7 @@ fn metadata_to_inline(context: &Context, md_idx: Option<MetadataIndex>) -> Optio
     })
 }
 
-pub fn inline_in_module(
+pub fn fn_inline(
     context: &mut Context,
     _: &AnalysisResults,
     module: Module,
@@ -109,6 +98,14 @@ pub fn inline_in_module(
             });
 
     let inline_heuristic = |ctx: &Context, func: &Function, _call_site: &Value| {
+        // The encoding code in the `__entry` functions contains pointer patterns that mark
+        // escape analysis and referred symbols as incomplete. This effectively forbids optimizations
+        // like SROA nad DCE. If we inline original entries, like e.g., `main`, the code in them will
+        // also not be optimized. Therefore, we forbid inlining of original entries into `__entry`.
+        if func.is_original_entry(ctx) {
+            return false;
+        }
+
         let attributed_inline = metadata_to_inline(ctx, func.get_metadata(ctx));
         match attributed_inline {
             Some(Inline::Always) => {
@@ -144,20 +141,6 @@ pub fn inline_in_module(
         modified |= inline_some_function_calls(context, &function, inline_heuristic)?;
     }
     Ok(modified)
-}
-
-pub fn inline_in_main(
-    context: &mut Context,
-    _: &AnalysisResults,
-    module: Module,
-) -> Result<bool, IrError> {
-    // For now we inline everything into `main()`.  Eventually we can be more selective.
-    for function in module.function_iter(context) {
-        if function.get_name(context) == "main" {
-            return inline_all_function_calls(context, &function);
-        }
-    }
-    Ok(false)
 }
 
 /// Inline all calls made from a specific function, effectively removing all `Call` instructions.
@@ -617,6 +600,7 @@ fn inline_instruction(
             InstOp::GetLocal(local_var) => {
                 new_block.append(context).get_local(map_local(local_var))
             }
+            InstOp::GetConfig(module, name) => new_block.append(context).get_config(module, name),
             InstOp::IntToPtr(value, ty) => {
                 new_block.append(context).int_to_ptr(map_value(value), ty)
             }

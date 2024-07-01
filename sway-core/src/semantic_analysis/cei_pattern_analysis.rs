@@ -30,6 +30,8 @@ enum Effect {
     BalanceTreeRead,      // balance tree read operation
     BalanceTreeReadWrite, // balance tree read and write operation
     OutputMessage,        // operation creates a new `Output::Message`
+    MintAsset,            // mint operation
+    BurnAsset,            // burn operation
 }
 
 impl fmt::Display for Effect {
@@ -42,6 +44,8 @@ impl fmt::Display for Effect {
             BalanceTreeRead => write!(f, "Balance tree read"),
             BalanceTreeReadWrite => write!(f, "Balance tree update"),
             OutputMessage => write!(f, "Output message sent"),
+            MintAsset => write!(f, "Asset minted"),
+            BurnAsset => write!(f, "Asset burned"),
         }
     }
 }
@@ -56,6 +60,8 @@ impl Effect {
             BalanceTreeRead => "making all balance tree reads",
             BalanceTreeReadWrite => "making all balance tree updates",
             OutputMessage => "sending all output messages",
+            MintAsset => "minting assets",
+            BurnAsset => "burning assets",
         })
     }
 }
@@ -215,6 +221,7 @@ fn analyze_expression(
         // base cases: no warnings can be emitted
         Literal(_)
         | ConstantExpression { .. }
+        | ConfigurableExpression { .. }
         | VariableExpression { .. }
         | FunctionParameter
         | StorageAccess(_)
@@ -494,6 +501,7 @@ fn effects_of_expression(engines: &Engines, expr: &ty::TyExpression) -> HashSet<
     match &expr.expression {
         Literal(_)
         | ConstantExpression { .. }
+        | ConfigurableExpression { .. }
         | VariableExpression { .. }
         | FunctionParameter
         | Break
@@ -608,11 +616,38 @@ fn effects_of_intrinsic(intr: &sway_ast::Intrinsic) -> HashSet<Effect> {
         StateLoadWord | StateLoadQuad => HashSet::from([Effect::StorageRead]),
         Smo => HashSet::from([Effect::OutputMessage]),
         ContractCall => HashSet::from([Effect::Interaction]),
-        Revert | JmpMem | IsReferenceType | IsStrArray | SizeOfType | SizeOfVal | SizeOfStr
-        | ContractRet | AssertIsStrArray | ToStrArray | Eq | Gt | Lt | Gtf | AddrOf | Log | Add
-        | Sub | Mul | Div | And | Or | Xor | Mod | Rsh | Lsh | PtrAdd | PtrSub | Not => {
-            HashSet::new()
-        }
+        Revert
+        | JmpMem
+        | IsReferenceType
+        | IsStrArray
+        | SizeOfType
+        | SizeOfVal
+        | SizeOfStr
+        | ContractRet
+        | AssertIsStrArray
+        | ToStrArray
+        | Eq
+        | Gt
+        | Lt
+        | Gtf
+        | AddrOf
+        | Log
+        | Add
+        | Sub
+        | Mul
+        | Div
+        | And
+        | Or
+        | Xor
+        | Mod
+        | Rsh
+        | Lsh
+        | PtrAdd
+        | PtrSub
+        | Not
+        | EncodeBufferEmpty
+        | EncodeBufferAppend
+        | EncodeBufferAsRawSlice => HashSet::new(),
     }
 }
 
@@ -624,6 +659,8 @@ fn effects_of_asm_op(op: &AsmOp) -> HashSet<Effect> {
         "bal" => HashSet::from([Effect::BalanceTreeRead]),
         "smo" => HashSet::from([Effect::OutputMessage]),
         "call" => HashSet::from([Effect::Interaction]),
+        "mint" => HashSet::from([Effect::MintAsset]),
+        "burn" => HashSet::from([Effect::BurnAsset]),
         // the rest of the assembly instructions are considered to not have effects
         _ => HashSet::new(),
     }

@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::{
     build_config::ExperimentalFlags,
-    decl_engine::{DeclEngineInsert, DeclRefFunction},
+    decl_engine::{DeclEngineGet, DeclEngineInsert, DeclRefFunction},
     engine_threading::*,
     language::{
         parsed::TreeType,
@@ -10,8 +10,8 @@ use crate::{
         CallPath, Purity, QualifiedCallPath, Visibility,
     },
     namespace::{
-        IsExtendingExistingImpl, IsImplSelf, ModulePath, ResolvedTraitImplItem,
-        TryInsertingTraitImplOnFailure,
+        IsExtendingExistingImpl, IsImplSelf, ModulePath, ResolvedDeclaration,
+        ResolvedTraitImplItem, TraitMap, TryInsertingTraitImplOnFailure,
     },
     semantic_analysis::{
         ast_node::{AbiMode, ConstShadowingMode},
@@ -92,12 +92,6 @@ pub struct TypeCheckContext<'a> {
     /// body).
     disallow_functions: bool,
 
-    /// Indicates when semantic analysis should  be deferred for function/method applications.
-    /// This is currently used to perform the final type checking and monomorphization in the
-    /// case of impl trait methods after the initial type checked AST is constructed, and
-    /// after we perform a dependency analysis on the tree.
-    defer_monomorphization: bool,
-
     /// Indicates when semantic analysis is type checking storage declaration.
     storage_declaration: bool,
 
@@ -127,7 +121,6 @@ impl<'a> TypeCheckContext<'a> {
             purity: Purity::default(),
             kind: TreeType::Contract,
             disallow_functions: false,
-            defer_monomorphization: false,
             storage_declaration: false,
             experimental,
         }
@@ -169,7 +162,6 @@ impl<'a> TypeCheckContext<'a> {
             purity: Purity::default(),
             kind: TreeType::Contract,
             disallow_functions: false,
-            defer_monomorphization: false,
             storage_declaration: false,
             experimental,
         }
@@ -199,7 +191,6 @@ impl<'a> TypeCheckContext<'a> {
             kind: self.kind,
             engines: self.engines,
             disallow_functions: self.disallow_functions,
-            defer_monomorphization: self.defer_monomorphization,
             storage_declaration: self.storage_declaration,
             experimental: self.experimental,
         }
@@ -226,7 +217,6 @@ impl<'a> TypeCheckContext<'a> {
             kind: self.kind,
             engines: self.engines,
             disallow_functions: self.disallow_functions,
-            defer_monomorphization: self.defer_monomorphization,
             storage_declaration: self.storage_declaration,
             experimental: self.experimental,
         };
@@ -254,7 +244,6 @@ impl<'a> TypeCheckContext<'a> {
             kind: self.kind,
             engines: self.engines,
             disallow_functions: self.disallow_functions,
-            defer_monomorphization: self.defer_monomorphization,
             storage_declaration: self.storage_declaration,
             experimental: self.experimental,
         };
@@ -392,15 +381,6 @@ impl<'a> TypeCheckContext<'a> {
     }
 
     /// Map this `TypeCheckContext` instance to a new one with
-    /// `defer_method_application` set to `true`.
-    pub(crate) fn with_defer_monomorphization(self) -> Self {
-        Self {
-            defer_monomorphization: true,
-            ..self
-        }
-    }
-
-    /// Map this `TypeCheckContext` instance to a new one with
     /// `storage_declaration` set to `true`.
     pub(crate) fn with_storage_declaration(self) -> Self {
         Self {
@@ -440,14 +420,6 @@ impl<'a> TypeCheckContext<'a> {
         self.abi_mode.clone()
     }
 
-    pub(crate) fn const_shadowing_mode(&self) -> ConstShadowingMode {
-        self.const_shadowing_mode
-    }
-
-    pub(crate) fn generic_shadowing_mode(&self) -> GenericShadowingMode {
-        self.generic_shadowing_mode
-    }
-
     pub(crate) fn purity(&self) -> Purity {
         self.purity
     }
@@ -459,10 +431,6 @@ impl<'a> TypeCheckContext<'a> {
 
     pub(crate) fn functions_disallowed(&self) -> bool {
         self.disallow_functions
-    }
-
-    pub(crate) fn defer_monomorphization(&self) -> bool {
-        self.defer_monomorphization
     }
 
     pub(crate) fn storage_declaration(&self) -> bool {
@@ -538,7 +506,7 @@ impl<'a> TypeCheckContext<'a> {
                 handler,
                 engines,
                 name,
-                item,
+                ResolvedDeclaration::Typed(item),
                 const_shadowing_mode,
                 generic_shadowing_mode,
             )
@@ -941,7 +909,7 @@ impl<'a> TypeCheckContext<'a> {
                 // create the type id from the copy
                 type_engine.insert(
                     self.engines,
-                    TypeInfo::Struct(new_decl_ref.clone()),
+                    TypeInfo::Struct(*new_decl_ref.id()),
                     new_decl_ref.span().source_id(),
                 )
             }
@@ -968,7 +936,7 @@ impl<'a> TypeCheckContext<'a> {
                 // create the type id from the copy
                 type_engine.insert(
                     self.engines,
-                    TypeInfo::Enum(new_decl_ref.clone()),
+                    TypeInfo::Enum(*new_decl_ref.id()),
                     new_decl_ref.span().source_id(),
                 )
             }
@@ -1397,6 +1365,45 @@ impl<'a> TypeCheckContext<'a> {
         self.namespace_mut()
             .root
             .self_import(handler, engines, src, &mod_path, alias)
+    }
+
+    // Import all impls for a struct/enum. Do nothing for other types.
+    pub(crate) fn impls_import(&mut self, handler: &Handler, engines: &Engines, type_id: TypeId) {
+        let type_info = engines.te().get(type_id);
+
+        let decl_call_path = match &*type_info {
+            TypeInfo::Enum(decl_id) => {
+                let decl = engines.de().get(decl_id);
+                decl.call_path.clone()
+            }
+            TypeInfo::Struct(decl_id) => {
+                let decl = engines.de().get(decl_id);
+                decl.call_path.clone()
+            }
+            _ => return,
+        };
+
+        let mut impls_to_insert = TraitMap::default();
+
+        let root_mod = &self.namespace().root().module;
+        let Ok(src_mod) = root_mod.lookup_submodule(handler, engines, &decl_call_path.prefixes)
+        else {
+            return;
+        };
+
+        impls_to_insert.extend(
+            src_mod
+                .current_items()
+                .implemented_traits
+                .filter_by_type_item_import(type_id, engines),
+            engines,
+        );
+
+        let dst_mod = self.namespace_mut().module_mut(engines);
+        dst_mod
+            .current_items_mut()
+            .implemented_traits
+            .extend(impls_to_insert, engines);
     }
 
     /// Short-hand for performing a [Module::item_import] with `mod_path` as the destination.

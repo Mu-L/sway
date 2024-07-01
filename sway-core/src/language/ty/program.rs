@@ -21,7 +21,7 @@ pub struct TyProgram {
     pub kind: TyProgramKind,
     pub root: TyModule,
     pub declarations: Vec<TyDecl>,
-    pub configurables: Vec<TyConstantDecl>,
+    pub configurables: Vec<TyConfigurableDecl>,
     pub storage_slots: Vec<StorageSlot>,
     pub logged_types: Vec<(LogId, TypeId)>,
     pub messages_types: Vec<(MessageId, TypeId)>,
@@ -65,15 +65,15 @@ impl TyProgram {
         kind: parsed::TreeType,
         package_name: &str,
         experimental: ExperimentalFlags,
-    ) -> Result<(TyProgramKind, Vec<TyDecl>, Vec<TyConstantDecl>), ErrorEmitted> {
+    ) -> Result<(TyProgramKind, Vec<TyDecl>, Vec<TyConfigurableDecl>), ErrorEmitted> {
         // Extract program-kind-specific properties from the root nodes.
 
         let ty_engine = engines.te();
         let decl_engine = engines.de();
 
         // Validate all submodules
-        let mut non_configurables_constants = Vec::<TyConstantDecl>::new();
-        let mut configurables = Vec::<TyConstantDecl>::new();
+        let mut non_configurables_constants = vec![];
+        let mut configurables = vec![];
         for (_, submodule) in &root.submodules {
             match Self::validate_root(
                 handler,
@@ -118,12 +118,15 @@ impl TyProgram {
                     decl_id,
                     ..
                 })) => {
-                    let config_decl = (*decl_engine.get_constant(decl_id)).clone();
-                    if config_decl.is_configurable {
-                        configurables.push(config_decl);
-                    } else {
-                        non_configurables_constants.push(config_decl);
-                    }
+                    let decl = (*decl_engine.get_constant(decl_id)).clone();
+                    non_configurables_constants.push(decl);
+                }
+                TyAstNodeContent::Declaration(TyDecl::ConfigurableDecl(ConfigurableDecl {
+                    decl_id,
+                    ..
+                })) => {
+                    let decl = (*decl_engine.get_configurable(decl_id)).clone();
+                    configurables.push(decl);
                 }
                 // ABI entries are all functions declared in impl_traits on the contract type
                 // itself, except for ABI supertraits, which do not expose their methods to
@@ -336,18 +339,36 @@ impl TyProgram {
                     (mains[0], mains[0])
                 };
 
-                // A script must not return a `raw_ptr` or any type aggregating a `raw_slice`.
-                // Directly returning a `raw_slice` is allowed, which will be just mapped to a RETD.
-                // TODO: Allow returning nested `raw_slice`s when our spec supports encoding DSTs.
-                let main_fn = decl_engine.get(&main_fn_id);
-                for p in main_fn.parameters() {
+                // On encoding v0, we cannot accept/return ptrs, slices etc...
+                if !experimental.new_encoding {
+                    let main_fn = decl_engine.get(&main_fn_id);
+                    for p in main_fn.parameters() {
+                        if let Some(error) = get_type_not_allowed_error(
+                            engines,
+                            p.type_argument.type_id,
+                            &p.type_argument,
+                            |t| match t {
+                                TypeInfo::StringSlice => {
+                                    Some(TypeNotAllowedReason::StringSliceInMainParameters)
+                                }
+                                TypeInfo::RawUntypedSlice => {
+                                    Some(TypeNotAllowedReason::NestedSliceReturnNotAllowedInMain)
+                                }
+                                _ => None,
+                            },
+                        ) {
+                            handler.emit_err(error);
+                        }
+                    }
+
+                    // Check main return type is valid
                     if let Some(error) = get_type_not_allowed_error(
                         engines,
-                        p.type_argument.type_id,
-                        &p.type_argument,
+                        main_fn.return_type.type_id,
+                        &main_fn.return_type,
                         |t| match t {
                             TypeInfo::StringSlice => {
-                                Some(TypeNotAllowedReason::StringSliceInMainParameters)
+                                Some(TypeNotAllowedReason::StringSliceInMainReturn)
                             }
                             TypeInfo::RawUntypedSlice => {
                                 Some(TypeNotAllowedReason::NestedSliceReturnNotAllowedInMain)
@@ -355,31 +376,13 @@ impl TyProgram {
                             _ => None,
                         },
                     ) {
-                        handler.emit_err(error);
-                    }
-                }
-
-                // Check main return type is valid
-                if let Some(error) = get_type_not_allowed_error(
-                    engines,
-                    main_fn.return_type.type_id,
-                    &main_fn.return_type,
-                    |t| match t {
-                        TypeInfo::StringSlice => {
-                            Some(TypeNotAllowedReason::StringSliceInMainReturn)
+                        // Let main return `raw_slice` directly
+                        if !matches!(
+                            &*engines.te().get(main_fn.return_type.type_id),
+                            TypeInfo::RawUntypedSlice
+                        ) {
+                            handler.emit_err(error);
                         }
-                        TypeInfo::RawUntypedSlice => {
-                            Some(TypeNotAllowedReason::NestedSliceReturnNotAllowedInMain)
-                        }
-                        _ => None,
-                    },
-                ) {
-                    // Let main return `raw_slice` directly
-                    if !matches!(
-                        &*engines.te().get(main_fn.return_type.type_id),
-                        TypeInfo::RawUntypedSlice
-                    ) {
-                        handler.emit_err(error);
                     }
                 }
 

@@ -112,11 +112,7 @@ impl TyTraitDecl {
             // to allow methods to use those functions
             ctx.insert_trait_implementation(
                 handler,
-                CallPath {
-                    prefixes: vec![],
-                    suffix: name.clone(),
-                    is_absolute: false,
-                },
+                CallPath::ident_to_fullpath(name.clone(), ctx.namespace),
                 new_type_parameters.iter().map(|x| x.into()).collect(),
                 self_type,
                 &dummy_interface_surface,
@@ -180,11 +176,7 @@ impl TyTraitDecl {
             // to allow methods to use those functions
             ctx.insert_trait_implementation(
                 handler,
-                CallPath {
-                    prefixes: vec![],
-                    suffix: name.clone(),
-                    is_absolute: false,
-                },
+                CallPath::ident_to_fullpath(name.clone(), ctx.namespace()),
                 new_type_parameters.iter().map(|x| x.into()).collect(),
                 self_type,
                 &dummy_interface_surface,
@@ -444,20 +436,13 @@ impl TyTraitDecl {
                     let const_decl = decl_engine.get_constant(decl_ref);
                     let const_name = const_decl.call_path.suffix.clone();
                     all_items.push(TyImplItem::Constant(decl_ref.clone()));
-                    let const_shadowing_mode = ctx.const_shadowing_mode();
-                    let generic_shadowing_mode = ctx.generic_shadowing_mode();
-                    let _ = ctx.namespace_mut().module_mut(engines).write(engines, |m| {
-                        m.current_items_mut().insert_symbol(
-                            handler,
-                            engines,
-                            const_name.clone(),
-                            ty::TyDecl::ConstantDecl(ty::ConstantDecl {
-                                decl_id: *decl_ref.id(),
-                            }),
-                            const_shadowing_mode,
-                            generic_shadowing_mode,
-                        )
-                    });
+                    let _ = ctx.insert_symbol(
+                        handler,
+                        const_name.clone(),
+                        ty::TyDecl::ConstantDecl(ty::ConstantDecl {
+                            decl_id: *decl_ref.id(),
+                        }),
+                    );
                 }
                 ty::TyTraitInterfaceItem::Type(decl_ref) => {
                     all_items.push(TyImplItem::Type(decl_ref.clone()));
